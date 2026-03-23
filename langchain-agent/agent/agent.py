@@ -30,7 +30,12 @@ def create_agent(settings: Settings):
     )
 
     # 定义工具列表
-    tools = [traffic_analyze, ads_analyze, inventory_check, product_diagnose]
+    tools = [
+        StructuredTool.from_function(traffic_analyze),
+        StructuredTool.from_function(ads_analyze),
+        StructuredTool.from_function(inventory_check),
+        StructuredTool.from_function(product_diagnose),
+    ]
 
     # 创建记忆
     memory = ConversationBufferMemory(
@@ -51,7 +56,6 @@ def create_agent(settings: Settings):
         llm=llm,
         tools=tools,
         prompt=prompt,
-        verbose=True,
     )
 
     # 创建 Agent 执行器

@@ -54,36 +54,71 @@ langchain-agent/
 
 ## 快速开始
 
-### 安装依赖
+### 1. 安装依赖
+
+建议在虚拟环境中运行：
 
 ```bash
+# 创建并激活虚拟环境 (Windows)
+python -m venv .venv
+.venv\Scripts\activate
+
+# 安装依赖
 pip install -r requirements.txt
 ```
 
-### 配置环境变量
+### 2. 配置环境变量
+
+在项目根目录下创建 `.env` 文件（已支持自动加载）：
+
+```env
+OPENAI_API_KEY=your_sk_key
+OPENAI_BASE_URL=https://api.deepseek.com
+OPENAI_MODEL=deepseek-chat
+```
+
+### 3. 启动服务
+
+**后端 (FastAPI):**
 
 ```powershell
-$env:OPENAI_API_KEY="<YOUR_KEY>"
-$env:OPENAI_BASE_URL="https://api.deepseek.com"
-$env:OPENAI_MODEL="deepseek-chat"
+# Windows 环境下建议设置 PYTHONPATH
+$env:PYTHONPATH="."
+python backend/main.py
 ```
 
-### 启动服务
+**前端 (Next.js):**
+
+如果您需要启动 UI 界面，请进入前端目录：
 
 ```bash
-uvicorn backend.main:app --reload
+cd ../code1/frontend
+npm install
+npm run dev
 ```
 
-### 测试 API
+> **注意**: 前端默认访问地址为 `http://localhost:3000`，后端地址已配置为 `http://localhost:8000`。
 
-```bash
-curl -X POST "http://127.0.0.1:8000/run" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "本周流量下滑严重",
-    "context": {"merchant_id": "demo-001"}
-  }'
-```
+---
+
+## 注意事项 (Troubleshooting)
+
+如果在启动或运行中遇到问题，请参考以下条目：
+
+1.  **500 Internal Server Error (API Key)**:
+    - 确保根目录下的 `.env` 文件配置正确。
+    - 服务必须由支持 `load_dotenv` 的入口启动（目前已在 `settings.py` 中修复）。
+
+2.  **TypeError: got an unexpected keyword argument 'verbose'**:
+    - LangChain 的 `create_openai_functions_agent` 不再支持直接传入 `verbose` 参数。
+    - 如需开启详细日志，应在 `AgentExecutor` 级别设置 `verbose=True`。
+
+3.  **AttributeError: 'function' object has no attribute 'get'**:
+    - LangChain 要求工具必须被 `StructuredTool.from_function` 包装，不能直接传入 Python 原生函数。
+
+4.  **Windows 下的 Hot Reload 故障**:
+    - 如果修改代码后 `uvicorn` 重载报错，请手动 `Ctrl+C` 强行终止进程并重新冷启动。
+
 
 ## 核心功能
 
