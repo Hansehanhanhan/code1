@@ -57,6 +57,8 @@ async def run(request: RunRequest):
 
     except Exception as e:
         # 错误处理
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
             detail=f"Agent 执行失败: {str(e)}"

@@ -16,7 +16,7 @@ type RunResponse = {
 };
 
 const SAMPLE_QUERY = "本周店铺流量明显下滑，请诊断原因并给出可执行建议。";
-const DEFAULT_BACKEND_URL = "http://127.0.0.1:8001";
+const DEFAULT_BACKEND_URL = "http://127.0.0.1:8000";
 
 const STEP_LABELS: Record<string, string> = {
   Planner: "规划器",
@@ -34,7 +34,7 @@ function formatValue(value: unknown) {
     return (
       <ul className="list-disc ml-5 space-y-1.5 mt-2">
         {value.map((item, i) => (
-          <li key={i} className="text-sm text-gray-800 leading-relaxed shadow-sm p-2 bg-white/40 rounded-lg border border-orange-50/50">
+          <li key={i} className="text-sm text-gray-800 leading-relaxed shadow-sm p-2 bg-white/40 rounded-lg border border-blue-50/50">
             {typeof item === "object" ? JSON.stringify(item) : String(item)}
           </li>
         ))}
@@ -54,24 +54,24 @@ function formatValue(value: unknown) {
             return (
               <div key={k} className="p-3 bg-white/80 rounded-xl border border-gray-200/50 shadow-sm backdrop-blur-sm">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="font-bold text-[#8d4f23] text-xs px-2 py-0.5 bg-orange-50 rounded-md ring-1 ring-orange-100">{v.tool}</span>
+                  <span className="font-bold text-[#234f8d] text-xs px-2 py-0.5 bg-blue-50 rounded-md ring-1 ring-blue-100">{v.tool}</span>
                   <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded-full ${v.status === 'ok' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                     {v.status}
                   </span>
                 </div>
-                <p className="text-sm font-semibold text-[#1e1712] mb-2">{v.summary}</p>
+                <p className="text-sm font-semibold text-[#12171e] mb-2">{v.summary}</p>
                 {v.data && (
                   <div className="grid grid-cols-2 gap-x-4 gap-y-1 p-2 bg-gray-50/50 rounded-lg text-[11px] border border-gray-100">
                     {Object.entries(v.data).map(([dk, dv]) => (
                       <div key={dk} className="flex justify-between border-b border-gray-100/50 pb-0.5">
-                        <span className="text-[#6a5f55] font-medium">{dk}</span>
-                        <span className="font-mono text-[#1e1712]">{String(dv)}</span>
+                        <span className="text-[#555f6a] font-medium">{dk}</span>
+                        <span className="font-mono text-[#12171e]">{String(dv)}</span>
                       </div>
                     ))}
                   </div>
                 )}
                 {v.recommendations && (
-                  <div className="mt-2 text-[11px] text-[#6a5f55] italic">
+                  <div className="mt-2 text-[11px] text-[#555f6a] italic">
                     💡 {v.recommendations.join(" | ")}
                   </div>
                 )}
@@ -83,8 +83,8 @@ function formatValue(value: unknown) {
           const isHighlight = ["scenario", "risk_level", "source", "objective"].includes(k);
           return (
             <div key={k} className="flex items-start gap-2 text-sm group">
-              <span className="text-[#6a5f55] font-semibold min-w-[85px] pt-0.5 select-none">{k}:</span>
-              <div className={`flex-1 break-words transition-colors ${isHighlight ? 'font-bold text-[#8d4f23]' : 'text-[#1e1712]'}`}>
+              <span className="text-[#555f6a] font-semibold min-w-[85px] pt-0.5 select-none">{k}:</span>
+              <div className={`flex-1 break-words transition-colors ${isHighlight ? 'font-bold text-[#234f8d]' : 'text-[#12171e]'}`}>
                 {typeof v === "object" ? formatValue(v) : String(v)}
               </div>
             </div>

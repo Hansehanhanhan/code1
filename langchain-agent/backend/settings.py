@@ -2,6 +2,10 @@
 
 import os
 from dataclasses import dataclass
+from dotenv import load_dotenv
+
+# 加载 .env 文件
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 
 def _to_bool(value: str | None, default: bool) -> bool:
