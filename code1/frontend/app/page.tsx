@@ -338,7 +338,7 @@ export default function Home() {
     <main className="page-shell">
       <section className="hero-card">
         <div className="hero-copy">
-          <p className="eyebrow">Day 1 骨架</p>
+          <p className="eyebrow">ReAct 流式诊断</p>
           <h1>商家运营 Copilot</h1>
           <p className="hero-text">
             页面会调用后端 <code>/run_stream</code>，实时展示每一轮 ReAct 抉择和工具调用结果。
@@ -464,6 +464,3 @@ export default function Home() {
     </main>
   );
 }
-
-
-
