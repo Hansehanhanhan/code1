@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { FormEvent, useMemo, useState } from "react";
 
@@ -58,52 +58,13 @@ const TOOL_LABELS: Record<string, string> = {
   product_diagnose: "商品诊断",
 };
 
-const FIELD_LABELS: Record<string, string> = {
-  latency_ms: "延迟(毫秒)",
-  fallback_used: "是否使用兜底",
-  duration_ms: "耗时(毫秒)",
-  thought: "思考",
-  action: "动作",
-  action_input: "动作输入",
-  observation: "观察结果",
-  result: "最终结果",
-  query: "问题",
-  context: "上下文",
-  session_id: "会话ID",
-};
-
 function toolLabel(name: string) {
   return TOOL_LABELS[name] ? `${TOOL_LABELS[name]} (${name})` : name;
-}
-
-function fieldLabel(key: string) {
-  return FIELD_LABELS[key] ?? key;
-}
-
-function stripMarkdownBold(text: string) {
-  return text.replace(/\*\*(.*?)\*\*/g, "$1").replace(/\*\*/g, "");
-}
-
-function formatFinalAnswer(text: string) {
-  let formatted = stripMarkdownBold(text).replace(/\r\n/g, "\n").trim();
-  formatted = formatted.replace(/建议采取以下措施[:：]/g, "建议采取以下措施：\n");
-  formatted = formatted.replace(/([。；])(?=\d+[\.、])/g, "$1\n");
-  formatted = formatted.replace(/([。；])(?=[一二三四五六七八九十]+是)/g, "$1\n");
-  formatted = formatted.replace(/(^|[^\n])(核心原因[:：]|行动建议[:：]|风险与复盘[:：]|问题判断[:：])/g, "$1\n$2");
-  formatted = formatted.replace(/(^|[^\n])(\d+[\.、])/g, "$1\n$2");
-  formatted = formatted.replace(/\n{3,}/g, "\n\n").trim();
-  return formatted;
 }
 
 function renderPrimitiveByKey(key: string, value: unknown) {
   if (key === "action" && typeof value === "string") {
     return <span className="text-sm leading-relaxed">{toolLabel(value)}</span>;
-  }
-  if (key === "fallback_used" && typeof value === "boolean") {
-    return <span className="text-sm leading-relaxed">{value ? "是" : "否"}</span>;
-  }
-  if ((key === "latency_ms" || key === "duration_ms") && typeof value === "number") {
-    return <span className="text-sm leading-relaxed">{value} 毫秒</span>;
   }
   return <span className="text-sm leading-relaxed">{String(value)}</span>;
 }
@@ -117,10 +78,7 @@ function formatValue(value: unknown) {
     return (
       <ul className="list-disc ml-5 space-y-1.5 mt-2">
         {value.map((item, i) => (
-          <li
-            key={i}
-            className="text-sm text-gray-800 leading-relaxed shadow-sm p-2 bg-white/40 rounded-lg border border-blue-50/50"
-          >
+          <li key={i} className="text-sm text-gray-800 leading-relaxed shadow-sm p-2 bg-white/40 rounded-lg border border-blue-50/50">
             {typeof item === "object" ? JSON.stringify(item) : String(item)}
           </li>
         ))}
@@ -133,9 +91,7 @@ function formatValue(value: unknown) {
       <div className="flex flex-col gap-3 mt-2">
         {Object.entries(value as Record<string, unknown>).map(([k, v]) => (
           <div key={k} className="flex items-start gap-2 text-sm group">
-            <span className="text-[#555f6a] font-semibold min-w-[95px] pt-0.5 select-none">
-              {fieldLabel(k)}:
-            </span>
+            <span className="text-[#555f6a] font-semibold min-w-[95px] pt-0.5 select-none">{k}:</span>
             <div className="flex-1 break-words transition-colors text-[#12171e]">
               {typeof v === "object" ? formatValue(v) : renderPrimitiveByKey(k, v)}
             </div>
@@ -185,7 +141,6 @@ function upsertLoopStep(
 export default function Home() {
   const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL ?? DEFAULT_BACKEND_URL;
   const [query, setQuery] = useState(SAMPLE_QUERY);
-  const [sessionId, setSessionId] = useState("demo-session-001");
   const [context, setContext] = useState<ContextFormData>(TEMPLATES.retail);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -223,7 +178,6 @@ export default function Home() {
 
     const payload = {
       query,
-      session_id: sessionId.trim() ? sessionId.trim() : undefined,
       context: context.merchant_id
         ? {
             merchant_id: context.merchant_id,
@@ -338,7 +292,7 @@ export default function Home() {
     <main className="page-shell">
       <section className="hero-card">
         <div className="hero-copy">
-          <p className="eyebrow">Day 1 骨架</p>
+          <p className="eyebrow">ReAct 流式诊断</p>
           <h1>商家运营 Copilot</h1>
           <p className="hero-text">
             页面会调用后端 <code>/run_stream</code>，实时展示每一轮 ReAct 抉择和工具调用结果。
@@ -353,16 +307,6 @@ export default function Home() {
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="请描述商家当前遇到的问题"
-            />
-          </label>
-
-          <label className="field">
-            <span>会话 ID（用于记忆）</span>
-            <input
-              type="text"
-              value={sessionId}
-              onChange={(event) => setSessionId(event.target.value)}
-              placeholder="demo-session-001"
             />
           </label>
 
@@ -427,7 +371,7 @@ export default function Home() {
         <article className="result-card">
           <h2>最终建议</h2>
           {error ? <p className="error">{error}</p> : null}
-          <pre>{response ? formatFinalAnswer(response.final_answer || "流式生成中...") : "等待结果..."}</pre>
+          <pre>{response ? response.final_answer || "流式生成中..." : "等待结果..."}</pre>
         </article>
 
         <article className="result-card">
@@ -464,6 +408,3 @@ export default function Home() {
     </main>
   );
 }
-
-
-
