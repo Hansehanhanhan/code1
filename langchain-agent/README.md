@@ -2,6 +2,8 @@
 
 基于 LangChain 的商家运营 AI Agent 项目，展示了如何使用 LangChain 框架简化 Agent 开发。
 
+> 当前代码实现已切换为 `ReAct Agent`，并支持通过 `session_id` 的内存短期会话记忆（进程内，重启后清空）。
+
 ## 项目简介
 
 这是项目的第二个版本，使用 LangChain 重构了 Agent 实现。相比原生版本，LangChain 提供了：

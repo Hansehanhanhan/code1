@@ -10,6 +10,12 @@ class RunRequest(BaseModel):
 
     query: str = Field(..., min_length=1, description="用户输入的问题描述")
     context: Dict[str, Any] = Field(default_factory=dict, description="可选结构化上下文")
+    session_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        description="可选会话 ID。相同 session_id 会复用内存中的短期历史。",
+    )
 
 
 class StepRecord(BaseModel):
