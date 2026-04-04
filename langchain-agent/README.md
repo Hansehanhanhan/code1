@@ -1,72 +1,11 @@
-# Merchant Ops Copilot (LangChain ReAct)
+﻿# Merchant Ops Copilot (LangChain ReAct)
 
-基于 LangChain 的商家运营 Agent，当前实现为 **ReAct + 流式事件 + 会话记忆（session_id）**。
-
-## 本次改动说明
-
-### ReAct 架构
-- 已切换为 `create_react_agent`
-- Prompt 使用 ReAct 规范流程
-- 工具输入约定为 JSON 字符串（含 `query/context`）
-
-### 会话记忆
-- 请求体新增可选字段：`session_id`
-- 相同 `session_id` 复用短期历史（进程内）
-- 重启服务后历史清空
-
-### 流式接口
-- 新增 `POST /run_stream`（SSE）
-- 事件类型：
-  - `agent_action`
-  - `tool_observation`
-  - `final_response`
-  - `error`
-
-### 执行步骤增强
-- API 返回 `steps` 支持每轮 ReAct 轨迹
-- 每轮记录：
-  - `thought`
-  - `action`
-  - `action_input`
-  - `observation`
-  - `duration_ms`
-
-## API
-
-### 1) `POST /run`
-同步返回完整结果。
-
-请求示例：
-```json
-{
-  "query": "本周流量下滑，请诊断原因",
-  "context": {
-    "merchant_id": "demo-001"
-  },
-  "session_id": "demo-session-001"
-}
-```
-
-### 2) `POST /run_stream`
-流式返回事件，`Content-Type: text/event-stream`。
-
-每条事件格式：
-```text
-data: {"type":"agent_action","content":{...}}
-```
-
-## 启动
-
-```powershell
-cd langchain-agent
-$env:PYTHONPATH="."
-.\.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
-```
-
-健康检查：
-```powershell
-Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/health
-```
+基于 LangChain 的商家运营 Agent，当前实现为：
+- ReAct 推理
+- SSE 流式事件
+- `session_id` 会话短期记忆
+- RAG 检索工具（`retrieve_knowledge`）
+- 仅本地开源 embedding（sentence-transformers）
 
 ## 目录
 
@@ -80,6 +19,53 @@ langchain-agent/
 │   └── settings.py
 ├── tools/
 │   └── tools.py
+├── rag/
+│   ├── __init__.py
+│   └── knowledge_base.py
+├── knowledge/
+│   └── seed/
 └── requirements.txt
 ```
 
+## 启动
+
+```powershell
+cd E:\code
+.\.venv\Scripts\python.exe -m pip install -U pip
+.\.venv\Scripts\python.exe -m pip install -r .\langchain-agent\requirements.txt
+
+cd E:\code\langchain-agent
+$env:PYTHONPATH='.'
+& "..\.venv\Scripts\python.exe" -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+## 前端联调（可选）
+
+```powershell
+cd E:\code\code1\frontend
+npm install
+npm run dev
+```
+
+默认访问：`http://127.0.0.1:3000`。  
+若后端地址不是 `http://127.0.0.1:8000`，请先设置：
+
+```powershell
+$env:NEXT_PUBLIC_BACKEND_URL='http://127.0.0.1:8000'
+```
+
+## API
+- `POST /run`
+- `POST /run_stream`
+
+## RAG 配置
+- `RAG_ENABLED`：是否启用 RAG（默认 `true`）
+- `RAG_DOCS_DIR`：知识库目录（默认 `knowledge/seed`）
+- `RAG_VECTOR_BACKEND`：向量后端（默认 `chroma`）
+- `RAG_TOP_K`：检索返回数量（默认 `3`）
+- `RAG_EMBEDDING_MODEL`：默认 `BAAI/bge-small-zh-v1.5`
+- `RAG_EMBEDDING_DEVICE`：默认 `cpu`（可改 `cuda`）
+
+说明：
+- 仅支持本地开源 embedding。
+- 模型加载失败时不会回退 hash，会直接返回错误。
