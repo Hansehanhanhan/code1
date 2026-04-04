@@ -5,23 +5,27 @@ import re
 from collections import defaultdict
 from threading import RLock
 from time import perf_counter
-from typing import Any, Callable, Dict
+from typing import Any, Callable
 
 from langchain.agents import AgentExecutor, create_react_agent
-from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain.prompts import PromptTemplate
 from langchain.tools import StructuredTool
+from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_openai import ChatOpenAI
 
 from backend.models import Metrics, RunResponse, StepRecord
 from backend.settings import Settings
+from rag import retrieve_knowledge
 from tools.tools import ads_analyze, inventory_check, product_diagnose, traffic_analyze
 
 DEFAULT_SESSION_ID = "default"
 MAX_HISTORY_TURNS = 8
+MAX_AGENT_ITERATIONS = 12
+MAX_AGENT_EXECUTION_SECONDS = 90
 _session_histories: dict[str, list[tuple[str, str]]] = defaultdict(list)
 _session_lock = RLock()
-EventSink = Callable[[Dict[str, Any]], None]
+EventSink = Callable[[dict[str, Any]], None]
+ToolFn = Callable[[str, dict[str, Any]], dict[str, Any]]
 
 
 def _extract_thought(action_log: str) -> str:
@@ -48,16 +52,16 @@ class ReActTraceCallbackHandler(BaseCallbackHandler):
     def __init__(self, event_sink: EventSink | None = None) -> None:
         self.steps: list[StepRecord] = []
         self._loop_index = 0
-        self._pending: Dict[str, Any] | None = None
+        self._pending: dict[str, Any] | None = None
         self._event_sink = event_sink
 
-    def _emit(self, event_type: str, content: Dict[str, Any]) -> None:
+    def _emit(self, event_type: str, content: dict[str, Any]) -> None:
         if self._event_sink is None:
             return
         try:
             self._event_sink({"type": event_type, "content": content})
         except Exception:
-            # Never fail the agent run because downstream streaming failed.
+            # Never fail the run if SSE push fails.
             return
 
     def on_agent_action(self, action: Any, **kwargs: Any) -> Any:
@@ -119,7 +123,6 @@ class ReActTraceCallbackHandler(BaseCallbackHandler):
 
 
 def _cleanup_markdown(text: str) -> str:
-    # Keep plain-text readability in UI by removing bold markers.
     cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", text, flags=re.DOTALL)
     return cleaned.replace("**", "")
 
@@ -136,6 +139,7 @@ def _get_history_text(session_id: str) -> str:
         turns = list(_session_histories.get(session_id, []))
     if not turns:
         return ""
+
     lines: list[str] = []
     for user_query, assistant_answer in turns:
         lines.append(f"Human: {user_query}")
@@ -151,10 +155,11 @@ def _append_history(session_id: str, query: str, final_answer: str) -> None:
             _session_histories[session_id] = history[-MAX_HISTORY_TURNS:]
 
 
-def _parse_tool_input(tool_input: str) -> tuple[str, Dict[str, Any]]:
+def _parse_tool_input(tool_input: str) -> tuple[str, dict[str, Any]]:
     raw = tool_input.strip()
     if not raw:
         return "", {}
+
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError:
@@ -170,11 +175,7 @@ def _parse_tool_input(tool_input: str) -> tuple[str, Dict[str, Any]]:
     return raw, {}
 
 
-def _build_react_tool(
-    name: str,
-    description: str,
-    tool_fn: Callable[[str, Dict[str, Any]], Dict[str, Any]],
-) -> StructuredTool:
+def _build_react_tool(name: str, description: str, tool_fn: ToolFn) -> StructuredTool:
     def _runner(tool_input: str) -> str:
         query, context = _parse_tool_input(tool_input)
         result = tool_fn(query, context)
@@ -187,37 +188,43 @@ def _build_react_tool(
     )
 
 
-def _build_tools() -> list[StructuredTool]:
-    return [
+def _build_tools(settings: Settings) -> list[StructuredTool]:
+    tools: list[StructuredTool] = [
         _build_react_tool(
             name="traffic_analyze",
-            description=(
-                "流量趋势分析工具。入参应为 JSON 字符串，包含 `query`，可选 `context`。"
-            ),
+            description="Analyze traffic trend. Input JSON must contain query and can include context.",
             tool_fn=traffic_analyze,
         ),
         _build_react_tool(
             name="ads_analyze",
-            description=(
-                "广告效率与 ROI 分析工具。入参应为 JSON 字符串，包含 `query`，可选 `context`。"
-            ),
+            description="Analyze ad efficiency and ROI. Input JSON must contain query and can include context.",
             tool_fn=ads_analyze,
         ),
         _build_react_tool(
             name="inventory_check",
-            description=(
-                "库存风险检查工具。入参应为 JSON 字符串，包含 `query`，可选 `context`。"
-            ),
+            description="Check inventory risk. Input JSON must contain query and can include context.",
             tool_fn=inventory_check,
         ),
         _build_react_tool(
             name="product_diagnose",
-            description=(
-                "商品转化诊断工具。入参应为 JSON 字符串，包含 `query`，可选 `context`。"
-            ),
+            description="Diagnose product conversion. Input JSON must contain query and can include context.",
             tool_fn=product_diagnose,
         ),
     ]
+
+    if settings.rag_enabled:
+        tools.append(
+            _build_react_tool(
+                name="retrieve_knowledge",
+                description=(
+                    "Retrieve SOP and policy snippets from local knowledge base. "
+                    "Input JSON must contain query and can include context."
+                ),
+                tool_fn=lambda query, context: retrieve_knowledge(query, context, settings),
+            )
+        )
+
+    return tools
 
 
 def create_agent(settings: Settings, callbacks: list[BaseCallbackHandler] | None = None) -> AgentExecutor:
@@ -229,47 +236,56 @@ def create_agent(settings: Settings, callbacks: list[BaseCallbackHandler] | None
         model=settings.openai_model,
         temperature=0.3,
     )
+    tools = _build_tools(settings)
 
-    tools = _build_tools()
-    template = """你是电商运营分析助手。
-你必须优先调用工具获取证据，严禁编造 Observation。
-请使用中文进行 Thought 和 Final Answer。
-最终输出请使用纯文本，不要使用 Markdown 加粗符号 **。
-Final Answer 必须有清晰结构，按下面模板输出，每一项单独换行：
-问题判断：
-核心原因：
+    knowledge_hint = (
+        "If the question needs SOP or policy knowledge, call retrieve_knowledge first."
+        if settings.rag_enabled
+        else "Knowledge retrieval tool is disabled. Use only available analysis tools."
+    )
+
+    template = """You are an ecommerce operations analyst assistant.
+You must call tools to gather evidence before concluding.
+Do not fabricate any Observation.
+{knowledge_hint}
+Thought and Final Answer must be in Chinese.
+Output plain text only, do not use Markdown bold markers (**).
+Final Answer should include:
+Problem Summary:
+Root Causes:
 1. ...
 2. ...
 3. ...
-行动建议：
+Action Plan:
 1. ...
 2. ...
 3. ...
-风险与复盘：
+Risks and Follow-up:
 ...
 
-你可以使用如下工具：
+Available tools:
 {tools}
 
-会话历史（可能为空）：
+Chat history (may be empty):
 {chat_history}
 
-请严格使用如下格式：
-Question: 用户问题
-Thought: 你的思考（中文）
-Action: 从 [{tool_names}] 里选择一个工具
-Action Input: JSON 字符串，例如 {{"query": "本周流量下滑", "context": {{"merchant_id": "demo-001"}}}}
-Observation: 工具输出结果
-...（可重复 Thought/Action/Action Input/Observation）
-Thought: 我现在知道最终答案
-Final Answer: 给用户的最终回答（中文）
+Use this exact ReAct format:
+Question: user question
+Thought: your reasoning in Chinese
+Action: one of [{tool_names}]
+Action Input: a JSON string, e.g. {{"query":"traffic dropped this week","context":{{"merchant_id":"demo-001"}}}}
+Observation: tool output
+... (repeat Thought/Action/Action Input/Observation as needed)
+Thought: If evidence is already sufficient, stop tool calls and provide final answer.
+Thought: I now know the final answer
+Final Answer: final response to user in Chinese
 
-开始！
+Begin!
 
 Question: {input}
 Thought:{agent_scratchpad}"""
 
-    prompt = PromptTemplate.from_template(template)
+    prompt = PromptTemplate.from_template(template).partial(knowledge_hint=knowledge_hint)
     agent = create_react_agent(llm=llm, tools=tools, prompt=prompt)
     return AgentExecutor(
         agent=agent,
@@ -277,13 +293,15 @@ Thought:{agent_scratchpad}"""
         callbacks=callbacks or [],
         verbose=True,
         handle_parsing_errors=True,
-        max_iterations=8,
+        max_iterations=MAX_AGENT_ITERATIONS,
+        max_execution_time=MAX_AGENT_EXECUTION_SECONDS,
+        early_stopping_method="generate",
     )
 
 
 def run_agent(
     query: str,
-    context: Dict[str, Any],
+    context: dict[str, Any],
     session_id: str | None = None,
     event_sink: EventSink | None = None,
 ) -> RunResponse:
