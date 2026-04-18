@@ -1,0 +1,28 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PYTHONPATH: /app
+      SESSION_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+      RATE_LIMIT_ENABLED: "true"
+      RATE_LIMIT_WINDOW_SECONDS: "60"
+      RATE_LIMIT_MAX_REQUESTS: "30"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    ports:
+      - "8000:8000"
+

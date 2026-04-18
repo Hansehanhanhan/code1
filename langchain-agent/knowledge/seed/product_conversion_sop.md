@@ -1,3 +1,10 @@
+---
+merchant_id: demo-001
+category: retail
+time_range: last_90_days
+topic: product_conversion
+---
+
 # 商品转化提升 SOP
 
 ## 适用场景
