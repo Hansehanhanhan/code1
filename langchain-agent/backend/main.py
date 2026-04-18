@@ -146,7 +146,15 @@ def _resolve_client_ip(request: Request, current_settings: Settings) -> str:
         return direct_ip
 
     trusted_proxy_ips = {item.strip() for item in current_settings.trusted_proxy_ips if item.strip()}
-    if trusted_proxy_ips and direct_ip not in trusted_proxy_ips:
+    if not trusted_proxy_ips:
+        _log_event(
+            "xff_ignored",
+            reason="trust_x_forwarded_for_enabled_but_trusted_proxy_ips_empty",
+            direct_ip=direct_ip,
+        )
+        return direct_ip
+
+    if direct_ip not in trusted_proxy_ips:
         return direct_ip
 
     forwarded_for = request.headers.get("x-forwarded-for", "")
@@ -205,46 +213,76 @@ def _check_rate_limit(
     endpoint_limit = _endpoint_rate_limit_max(current_settings, endpoint)
     ip_limit = max(1, current_settings.rate_limit_max_requests_ip)
     key_with_session, key_ip_only = _build_rate_limit_keys(request, session_id, endpoint, current_settings)
+    # Short-circuit order to avoid unnecessary consumption on the secondary bucket.
+    if endpoint_limit <= ip_limit:
+        first_label, first_key, first_limit = "session_bucket", key_with_session, endpoint_limit
+        second_label, second_key, second_limit = "ip_bucket", key_ip_only, ip_limit
+    else:
+        first_label, first_key, first_limit = "ip_bucket", key_ip_only, ip_limit
+        second_label, second_key, second_limit = "session_bucket", key_with_session, endpoint_limit
 
-    allowed_session, remaining_session = limiter.allow(key_with_session, max_requests=endpoint_limit)
-    allowed_ip, remaining_ip = limiter.allow(key_ip_only, max_requests=ip_limit)
-    allowed = allowed_session and allowed_ip
-    remaining = min(remaining_session, remaining_ip)
-
-    if allowed:
+    allowed_first, remaining_first = limiter.allow(first_key, max_requests=first_limit)
+    if not allowed_first:
         _log_event(
-            "rate_limit_passed",
+            "rate_limit_exceeded",
             request_id=request_id,
             key=key_with_session,
             ip_key=key_ip_only,
             limit=endpoint_limit,
             ip_limit=ip_limit,
-            remaining=remaining,
+            remaining=remaining_first,
+            failed_bucket=first_label,
+            evaluation_order=[first_label, second_label],
         )
-        return max(0, remaining), endpoint_limit
+        _record_error(endpoint, "RateLimitExceeded")
+        _record_stability("rate_limit_exceeded_total", endpoint)
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests, please retry later.",
+            headers={
+                "Retry-After": str(current_settings.rate_limit_window_seconds),
+                "X-RateLimit-Limit": str(endpoint_limit),
+                "X-RateLimit-Remaining": "0",
+            },
+        )
 
-    failed_bucket = "session_bucket" if not allowed_session else "ip_bucket"
+    allowed_second, remaining_second = limiter.allow(second_key, max_requests=second_limit)
+    if not allowed_second:
+        _log_event(
+            "rate_limit_exceeded",
+            request_id=request_id,
+            key=key_with_session,
+            ip_key=key_ip_only,
+            limit=endpoint_limit,
+            ip_limit=ip_limit,
+            remaining=remaining_second,
+            failed_bucket=second_label,
+            evaluation_order=[first_label, second_label],
+        )
+        _record_error(endpoint, "RateLimitExceeded")
+        _record_stability("rate_limit_exceeded_total", endpoint)
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests, please retry later.",
+            headers={
+                "Retry-After": str(current_settings.rate_limit_window_seconds),
+                "X-RateLimit-Limit": str(endpoint_limit),
+                "X-RateLimit-Remaining": "0",
+            },
+        )
+
+    remaining = min(remaining_first, remaining_second)
     _log_event(
-        "rate_limit_exceeded",
+        "rate_limit_passed",
         request_id=request_id,
         key=key_with_session,
         ip_key=key_ip_only,
         limit=endpoint_limit,
         ip_limit=ip_limit,
         remaining=remaining,
-        failed_bucket=failed_bucket,
+        evaluation_order=[first_label, second_label],
     )
-    _record_error(endpoint, "RateLimitExceeded")
-    _record_stability("rate_limit_exceeded_total", endpoint)
-    raise HTTPException(
-        status_code=429,
-        detail="Too many requests, please retry later.",
-        headers={
-            "Retry-After": str(current_settings.rate_limit_window_seconds),
-            "X-RateLimit-Limit": str(endpoint_limit),
-            "X-RateLimit-Remaining": "0",
-        },
-    )
+    return max(0, remaining), endpoint_limit
 
 
 async def _run_agent_with_governance(
@@ -606,4 +644,3 @@ if __name__ == "__main__":
         port=8000,
         reload=True,
     )
-

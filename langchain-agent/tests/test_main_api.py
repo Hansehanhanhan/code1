@@ -424,6 +424,28 @@ def test_rate_limit_ip_bucket_blocks_session_rotation(monkeypatch) -> None:
     assert blocked.status_code == 429
 
 
+def test_rate_limit_short_circuit_avoids_secondary_bucket_on_primary_fail(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class SessionFirstFailLimiter:
+        def allow(self, key: str, *, max_requests: int | None = None) -> tuple[bool, int]:
+            del max_requests
+            calls.append(key)
+            if "|sid:" in key:
+                return False, 0
+            return True, 99
+
+    client = build_client(
+        monkeypatch,
+        limiter=SessionFirstFailLimiter(),
+        settings_overrides={"rate_limit_max_requests_run": 5, "rate_limit_max_requests_ip": 50},
+    )
+    blocked = client.post("/run", json={"query": "test", "context": {}, "session_id": "s1"})
+    assert blocked.status_code == 429
+    assert len(calls) == 1
+    assert "|sid:" in calls[0]
+
+
 def test_xff_header_ignored_when_not_trusted(monkeypatch) -> None:
     captured_keys: list[str] = []
 
@@ -437,6 +459,30 @@ def test_xff_header_ignored_when_not_trusted(monkeypatch) -> None:
         monkeypatch,
         limiter=RecordingLimiter(),
         settings_overrides={"trust_x_forwarded_for": False},
+    )
+    response = client.post(
+        "/run",
+        json={"query": "test", "context": {}, "session_id": "s1"},
+        headers={"x-forwarded-for": "203.0.113.9"},
+    )
+    assert response.status_code == 200
+    assert any("ip:testclient" in key for key in captured_keys)
+    assert all("203.0.113.9" not in key for key in captured_keys)
+
+
+def test_xff_header_ignored_when_trusted_enabled_but_proxy_list_empty(monkeypatch) -> None:
+    captured_keys: list[str] = []
+
+    class RecordingLimiter:
+        def allow(self, key: str, *, max_requests: int | None = None) -> tuple[bool, int]:
+            del max_requests
+            captured_keys.append(key)
+            return True, 99
+
+    client = build_client(
+        monkeypatch,
+        limiter=RecordingLimiter(),
+        settings_overrides={"trust_x_forwarded_for": True, "trusted_proxy_ips": []},
     )
     response = client.post(
         "/run",

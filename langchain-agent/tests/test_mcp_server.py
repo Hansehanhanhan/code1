@@ -124,3 +124,42 @@ def test_mcp_retrieve_knowledge_applies_input_limits(monkeypatch) -> None:
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(mcp_server._tool_retrieve_knowledge({"query": "12345", "context": {}}))
     assert excinfo.value.status_code == 413
+
+
+def test_mcp_rate_limit_applies(monkeypatch) -> None:
+    class CountingLimiter:
+        def __init__(self) -> None:
+            self._counts: dict[str, int] = {}
+
+        def allow(self, key: str, *, max_requests: int | None = None) -> tuple[bool, int]:
+            limit = max_requests or 1
+            count = self._counts.get(key, 0) + 1
+            self._counts[key] = count
+            remaining = max(0, limit - count)
+            return count <= limit, remaining
+
+    limiter = CountingLimiter()
+    monkeypatch.setattr(
+        mcp_server.Settings,
+        "from_env",
+        classmethod(
+            lambda cls: make_settings(
+                rate_limit_max_requests_run=1,
+                rate_limit_max_requests_ip=1,
+                run_retry_attempts=0,
+            )
+        ),
+    )
+    monkeypatch.setattr(mcp_server, "get_rate_limiter", lambda _settings: limiter)
+    monkeypatch.setattr(mcp_server, "run_agent", lambda *args, **kwargs: make_response("ok"))
+
+    ok = asyncio.run(
+        mcp_server._tool_run_agent({"query": "test", "context": {}, "session_id": "s1", "client_id": "c1"})
+    )
+    assert ok["metrics"]["fallback_used"] is False
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            mcp_server._tool_run_agent({"query": "test", "context": {}, "session_id": "s2", "client_id": "c1"})
+        )
+    assert excinfo.value.status_code == 429
