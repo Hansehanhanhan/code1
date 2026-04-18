@@ -29,3 +29,7 @@ __pycache__/
 *$py.class
 .pytest_cache/
 .mypy_cache/
+
+MODULAR-RAG-MCP-SERVER-main/
+
+resume_extracted.txt

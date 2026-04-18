@@ -1,3 +1,10 @@
+---
+merchant_id: demo-001
+category: retail
+time_range: last_90_days
+topic: traffic
+---
+
 # 流量下滑排查 SOP
 
 ## 适用场景

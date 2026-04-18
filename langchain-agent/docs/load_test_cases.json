@@ -1,0 +1,49 @@
+{
+  "cases": [
+    {
+      "label": "health_baseline",
+      "url": "http://127.0.0.1:8000/health",
+      "method": "GET",
+      "requests": 500,
+      "concurrency": 50,
+      "timeout": 5.0,
+      "ready_url": "http://127.0.0.1:8000/health",
+      "ready_timeout": 30.0
+    },
+    {
+      "label": "run_light",
+      "url": "http://127.0.0.1:8000/run",
+      "method": "POST",
+      "requests": 50,
+      "concurrency": 5,
+      "timeout": 90.0,
+      "body": {
+        "query": "请简要分析本周流量变化并给出三条优化建议",
+        "context": {
+          "merchant_id": "demo-001",
+          "category": "retail",
+          "time_range": "last_7_days"
+        },
+        "session_id": "loadtest-session-001"
+      }
+    },
+    {
+      "label": "run_stream_light",
+      "url": "http://127.0.0.1:8000/run_stream",
+      "method": "POST",
+      "requests": 30,
+      "concurrency": 3,
+      "timeout": 90.0,
+      "body": {
+        "query": "请输出简洁排查步骤",
+        "context": {
+          "merchant_id": "demo-001",
+          "category": "retail",
+          "time_range": "last_7_days"
+        },
+        "session_id": "loadtest-session-002"
+      }
+    }
+  ]
+}
+

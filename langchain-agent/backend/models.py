@@ -32,6 +32,13 @@ class Metrics(BaseModel):
 
     latency_ms: int = Field(ge=0)
     fallback_used: bool
+    llm_latency_ms: int = Field(default=0, ge=0)
+    tool_latency_ms: int = Field(default=0, ge=0)
+    loop_count: int = Field(default=0, ge=0)
+    retrieve_hits: int = Field(default=0, ge=0)
+    ttfb_ms: int | None = Field(default=None, ge=0)
+    event_count: int | None = Field(default=None, ge=0)
+    event_completeness: bool | None = None
 
 
 class RunResponse(BaseModel):
