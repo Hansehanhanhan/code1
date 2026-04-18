@@ -261,6 +261,7 @@ $env:PYTHONPATH='.'
 
 提示：
 - 当启用 `APP_AUTH_ENABLED=true` 时，MCP 的 `run_agent/retrieve_knowledge` 参数里也需要传 `api_key`。
+- MCP 已接入基础限流，建议调用方传 `client_id` 以获得稳定的限流分桶语义。
 
 启动命令：
 
@@ -315,6 +316,9 @@ time_range: last_7_days
 - `RATE_LIMIT_MAX_REQUESTS_IP`：纯 IP 硬限流桶每窗口上限（默认 `60`）
 - `TRUST_X_FORWARDED_FOR`：是否信任 `X-Forwarded-For`（默认 `false`）
 - `TRUSTED_PROXY_IPS`：受信代理 IP 列表（逗号分隔，仅在开启 `TRUST_X_FORWARDED_FOR` 时生效）
+
+说明：
+- 当 `TRUST_X_FORWARDED_FOR=true` 且 `TRUSTED_PROXY_IPS` 为空时，系统会忽略 `X-Forwarded-For` 并回退到 `request.client.host`。
 
 ## 稳定性治理配置
 - `REQUEST_TIMEOUT_SECONDS`：`/run` 超时秒数（默认 `120`）
