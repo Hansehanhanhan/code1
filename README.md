@@ -99,5 +99,5 @@ npm run dev
 
 ## 说明
 
-- 该仓库用于 AI Agent 工程化实践与实习面试展示。
+- 该仓库用于 AI Agent 工程化实践。
 - 如需查看版本差异，请阅读 `COMPARISON.md`。
