@@ -39,6 +39,7 @@ langchain-agent/
 ├── scripts/
 │   ├── load_test.py
 │   ├── load_test_matrix.py
+│   ├── eval_badcase.py
 │   └── run_badcase_regression.py
 ├── docs/
 │   ├── load_test_cases.json
@@ -396,4 +397,28 @@ cd E:\code\langchain-agent
 cd E:\code\langchain-agent
 $env:PYTHONPATH='.'
 & "..\.venv\Scripts\python.exe" .\scripts\run_badcase_regression.py
+```
+
+可选参数示例（适合 CI 或鉴权开启场景）：
+
+```powershell
+cd E:\code\langchain-agent
+$env:PYTHONPATH='.'
+& "..\.venv\Scripts\python.exe" .\scripts\run_badcase_regression.py --base-url http://127.0.0.1:8000 --output .\docs\bad_case_results.json --ready-timeout 60 --request-timeout 15 --api-key your_api_key
+```
+
+## 自动化回归（CI）
+
+仓库已提供 GitHub Actions 工作流：`.github/workflows/ci.yml`，在每次 `push` / `pull_request` 自动执行：
+- `pytest -q`
+- 启动后端（CI 配置）
+- 运行 bad case 回归脚本
+- 运行门禁评估脚本 `scripts/eval_badcase.py`
+- 上传 `bad_case_results.json` 与后端日志产物
+
+本地可手动执行门禁评估：
+
+```powershell
+cd E:\code\langchain-agent
+& "..\.venv\Scripts\python.exe" .\scripts\eval_badcase.py --input .\docs\bad_case_results.json --min-pass-rate 0.9 --max-avg-latency-ms 30000 --require-status 200 --require-expected false
 ```
