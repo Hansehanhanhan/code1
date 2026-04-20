@@ -12,6 +12,8 @@ logger = logging.getLogger("merchant_ops.session_store")
 
 
 class SessionStore(Protocol):
+    """会话存储统一协议（用于短期对话记忆）。"""
+
     def get_history(self, session_id: str) -> list[tuple[str, str]]:
         ...
 
@@ -28,6 +30,8 @@ class SessionStore(Protocol):
 
 
 class InMemorySessionStore:
+    """内存会话存储：实现简单，但服务重启会丢失。"""
+
     def __init__(self) -> None:
         self._data: dict[str, list[tuple[str, str]]] = defaultdict(list)
         self._lock = RLock()
@@ -49,11 +53,14 @@ class InMemorySessionStore:
         with self._lock:
             history = self._data[session_id]
             history.append((query, final_answer))
+            # 仅保留最近 N 轮，防止上下文无上限增长。
             if len(history) > max_history_turns:
                 self._data[session_id] = history[-max_history_turns:]
 
 
 class RedisSessionStore:
+    """Redis 会话存储：支持跨实例共享，并可设置 TTL。"""
+
     def __init__(self, redis_url: str) -> None:
         from redis import Redis
 
@@ -67,6 +74,7 @@ class RedisSessionStore:
 
     def get_history(self, session_id: str) -> list[tuple[str, str]]:
         key = self._key(session_id)
+        # 历史按 list 顺序读取（左旧右新）。
         items = self._client.lrange(key, 0, -1)
         history: list[tuple[str, str]] = []
         for item in items:
@@ -92,6 +100,7 @@ class RedisSessionStore:
         key = self._key(session_id)
         payload = json.dumps({"q": query, "a": final_answer}, ensure_ascii=False)
         pipeline = self._client.pipeline()
+        # 追加 + 截断 + TTL 在一个 pipeline 中执行，减少网络往返。
         pipeline.rpush(key, payload)
         pipeline.ltrim(key, -max_history_turns, -1)
         pipeline.expire(key, ttl_seconds)
@@ -104,6 +113,8 @@ _cached_store_mode = ""
 
 
 def get_session_store(settings: Settings) -> SessionStore:
+    """按配置返回会话存储，并支持 Redis 不可用时回退内存。"""
+
     global _cached_store
     global _cached_store_mode
 
@@ -139,4 +150,3 @@ def get_session_store(settings: Settings) -> SessionStore:
         _cached_store_mode = "memory"
         logger.info(json.dumps({"event": "session_store_ready", "backend": "memory"}, ensure_ascii=False))
         return _cached_store
-
