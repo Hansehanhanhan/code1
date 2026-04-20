@@ -10,12 +10,14 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 
 def _to_bool(value: str | None, default: bool) -> bool:
+    """把环境变量解析为布尔值，解析失败时使用默认值。"""
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _to_int(value: str | None, default: int, minimum: int = 1) -> int:
+    """把环境变量解析为整数，并约束最小值。"""
     if value is None:
         return default
     try:
@@ -26,6 +28,7 @@ def _to_int(value: str | None, default: int, minimum: int = 1) -> int:
 
 
 def _to_csv(value: str | None, default: list[str]) -> list[str]:
+    """把逗号分隔环境变量解析为字符串列表。"""
     if value is None:
         return list(default)
     items = [item.strip() for item in value.split(",")]
@@ -35,7 +38,7 @@ def _to_csv(value: str | None, default: list[str]) -> list[str]:
 
 @dataclass
 class Settings:
-    """Runtime settings."""
+    """运行时配置集合（统一由环境变量加载）。"""
 
     openai_api_key: str | None
     openai_base_url: str | None
@@ -76,6 +79,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        """从环境变量构造 Settings；所有默认值都在这里集中定义。"""
         return cls(
             openai_api_key=os.getenv("OPENAI_API_KEY"),
             openai_base_url=os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com"),
