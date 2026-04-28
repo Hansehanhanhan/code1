@@ -19,6 +19,12 @@ class RunRequest(BaseModel):
         max_length=128,
         description="可选会话 ID。相同 session_id 会复用内存中的短期历史。",
     )
+    idempotency_key: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        description="可选幂等键。相同 key 的重复提交会复用已创建任务，避免重复入队。",
+    )
 
 
 class StepRecord(BaseModel):
@@ -54,3 +60,41 @@ class RunResponse(BaseModel):
     final_answer: str
     steps: List[StepRecord]
     metrics: Metrics
+
+
+class JobCreateResponse(BaseModel):
+    """异步任务创建返回。"""
+
+    job_id: str
+    status: str
+    created_at: float
+    retry_of: str | None = None
+
+
+class JobCancelResponse(BaseModel):
+    """异步任务取消返回。"""
+
+    job_id: str
+    status: str
+    cancelled: bool
+    message: str
+
+
+class JobEvent(BaseModel):
+    """任务事件（用于回放/流式转发）。"""
+
+    id: int
+    type: str
+    content: Dict[str, Any]
+    created_at: float
+
+
+class JobStatusResponse(BaseModel):
+    """任务状态查询返回。"""
+
+    job_id: str
+    status: str
+    created_at: float
+    updated_at: float
+    error_message: str | None = None
+    response: RunResponse | None = None

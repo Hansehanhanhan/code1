@@ -82,6 +82,10 @@ $env:NEXT_PUBLIC_BACKEND_URL='http://127.0.0.1:8000'
 ## API
 - `POST /run`
 - `POST /run_stream`
+- `POST /jobs`（异步提交任务）
+- `GET /jobs/{job_id}`（查询任务状态与结果）
+- `GET /jobs/{job_id}/events`（拉取任务事件）
+- `GET /jobs/{job_id}/stream`（SSE 订阅任务事件）
 - `GET /metrics/error_types`
 - `GET /metrics/stability`
 
@@ -126,6 +130,26 @@ curl -N -X POST "http://127.0.0.1:8000/run_stream" \
     "context": {"merchant_id":"demo-001"},
     "session_id": "demo-session-002"
   }'
+```
+
+异步提交 `/jobs`：
+
+```bash
+curl -X POST "http://127.0.0.1:8000/jobs" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: replace_with_strong_secret" \
+  -d '{
+    "query": "请给我一份本周流量下滑的分步排查方案",
+    "context": {"merchant_id":"demo-001","category":"retail"},
+    "session_id": "demo-session-job-001"
+  }'
+```
+
+查询任务状态 `/jobs/{job_id}`：
+
+```bash
+curl "http://127.0.0.1:8000/jobs/<job_id>" \
+  -H "X-API-Key: replace_with_strong_secret"
 ```
 
 ## 前端鉴权联动
@@ -309,6 +333,7 @@ time_range: last_7_days
 - `SESSION_BACKEND`：`memory` / `redis`（默认 `memory`）
 - `SESSION_TTL_SECONDS`：会话过期秒数（Redis 下生效，默认 `86400`）
 - `REDIS_URL`：Redis 连接地址（如 `redis://127.0.0.1:6379/0`）
+- `JOB_DB_PATH`：异步任务持久化 SQLite 路径（默认 `.run/jobs.db`）
 - `RATE_LIMIT_ENABLED`：是否启用限流（默认 `true`）
 - `RATE_LIMIT_WINDOW_SECONDS`：限流窗口秒数（默认 `60`）
 - `RATE_LIMIT_MAX_REQUESTS`：窗口内最大请求数（默认 `30`）
