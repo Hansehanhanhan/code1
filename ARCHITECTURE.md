@@ -3,8 +3,6 @@
 ## 1. 文档信息
 - 项目名称：Merchant Ops Copilot（LangChain ReAct）
 - 技术栈：Python、FastAPI、LangChain、Redis、Next.js、SSE、Chroma/InMemory、Sentence-Transformers
-- 版本：v1（当前实现）
-- 目标读者：后端开发、AI 应用工程师、面试评审
 
 ## 2. 背景与目标
 本项目面向电商运营场景，用户输入业务问题（如流量下滑、ROI 下降、库存风险），系统通过 ReAct Agent 与工具调用完成归因和建议输出。
@@ -192,4 +190,3 @@
 2. 稳定性验收：超时、限流、降级路径可验证。
 3. 安全验收：鉴权与输入防护可触发并返回预期状态码。
 4. 质量验收：CI 绿灯，回归样例通过率达到预设阈值。
-
