@@ -29,7 +29,10 @@ __pycache__/
 *$py.class
 .pytest_cache/
 .mypy_cache/
+.run/
 
 MODULAR-RAG-MCP-SERVER-main/
 
 resume_extracted.txt
+
+agent_algo_interview_notes.md

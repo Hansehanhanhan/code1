@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import time
 from typing import Any, Callable
 
 from fastapi.testclient import TestClient
@@ -87,10 +88,14 @@ def build_client(
     settings_overrides: dict[str, Any] | None = None,
 ) -> TestClient:
     import backend.main as main
+    import backend.job_queue as job_queue
 
     merged_settings = make_settings(**(settings_overrides or {}))
     monkeypatch.setattr(main.Settings, "from_env", classmethod(lambda cls: merged_settings))
     monkeypatch.setattr(main, "get_rate_limiter", lambda _settings: limiter or DummyLimiter(True, remaining=29))
+    monkeypatch.setattr(main, "_job_runner", None)
+    monkeypatch.setattr(job_queue, "_cached_runner", None)
+    monkeypatch.setattr(job_queue, "_cached_runner_fingerprint", None)
 
     def _default_run_agent(
         query: str,
@@ -105,6 +110,7 @@ def build_client(
         return make_response("done")
 
     monkeypatch.setattr(main, "run_agent", run_agent_impl or _default_run_agent)
+    monkeypatch.setattr(job_queue, "run_agent", run_agent_impl or _default_run_agent)
     return TestClient(main.app)
 
 
@@ -199,6 +205,186 @@ def test_run_stream_emits_events(monkeypatch) -> None:
     assert stream_metrics["ttfb_ms"] >= 0
     assert stream_metrics["event_count"] >= 1
     assert stream_metrics["event_completeness"] is True
+
+
+def test_jobs_submit_and_get(monkeypatch, tmp_path) -> None:
+    client = build_client(
+        monkeypatch,
+        settings_overrides={"job_db_path": str(tmp_path / "jobs.db")},
+    )
+
+    created = client.post("/jobs", json={"query": "test", "context": {"merchant_id": "demo-001"}, "session_id": "s1"})
+    assert created.status_code == 200
+    payload = created.json()
+    job_id = payload["job_id"]
+    assert payload["status"] == "queued"
+
+    latest = None
+    for _ in range(30):
+        status_resp = client.get(f"/jobs/{job_id}")
+        assert status_resp.status_code == 200
+        latest = status_resp.json()
+        if latest["status"] in {"succeeded", "degraded", "failed"}:
+            break
+        time.sleep(0.05)
+
+    assert latest is not None
+    assert latest["status"] == "succeeded"
+    assert latest["response"] is not None
+    assert latest["response"]["final_answer"] == "done"
+
+
+def test_jobs_events_endpoint(monkeypatch, tmp_path) -> None:
+    client = build_client(
+        monkeypatch,
+        settings_overrides={"job_db_path": str(tmp_path / "jobs_events.db")},
+    )
+
+    created = client.post("/jobs", json={"query": "test", "context": {}, "session_id": "s1"})
+    assert created.status_code == 200
+    job_id = created.json()["job_id"]
+
+    for _ in range(30):
+        status_resp = client.get(f"/jobs/{job_id}")
+        assert status_resp.status_code == 200
+        if status_resp.json()["status"] in {"succeeded", "degraded", "failed"}:
+            break
+        time.sleep(0.05)
+
+    events_resp = client.get(f"/jobs/{job_id}/events")
+    assert events_resp.status_code == 200
+    body = events_resp.json()
+    event_types = [event["type"] for event in body["events"]]
+    assert "final_response" in event_types
+    assert "stream_metrics" in event_types
+
+
+def test_jobs_submit_idempotency_key_reuses_existing_job(monkeypatch, tmp_path) -> None:
+    client = build_client(
+        monkeypatch,
+        settings_overrides={"job_db_path": str(tmp_path / "jobs_idempotency.db")},
+    )
+    payload = {
+        "query": "test",
+        "context": {"merchant_id": "demo-001"},
+        "session_id": "s1",
+        "idempotency_key": "idem-001",
+    }
+
+    first = client.post("/jobs", json=payload)
+    assert first.status_code == 200
+    first_job_id = first.json()["job_id"]
+
+    second = client.post("/jobs", json=payload)
+    assert second.status_code == 200
+    second_job_id = second.json()["job_id"]
+    assert second_job_id == first_job_id
+
+    for _ in range(30):
+        status_resp = client.get(f"/jobs/{first_job_id}")
+        assert status_resp.status_code == 200
+        if status_resp.json()["status"] in {"succeeded", "degraded", "failed", "cancelled"}:
+            break
+        time.sleep(0.05)
+
+    events_resp = client.get(f"/jobs/{first_job_id}/events")
+    assert events_resp.status_code == 200
+    event_types = [event["type"] for event in events_resp.json()["events"]]
+    assert "idempotent_reused" in event_types
+
+
+def test_jobs_cancel_request(monkeypatch, tmp_path) -> None:
+    def slow_run_agent(
+        query: str,
+        context: dict[str, Any],
+        session_id: str | None,
+        event_sink=None,
+        request_id: str | None = None,
+    ) -> RunResponse:
+        del query, context, session_id, request_id
+        if event_sink is not None:
+            event_sink({"type": "agent_action", "content": {"loop_index": 1}})
+        time.sleep(0.2)
+        return make_response("slow done")
+
+    client = build_client(
+        monkeypatch,
+        run_agent_impl=slow_run_agent,
+        settings_overrides={"job_db_path": str(tmp_path / "jobs_cancel.db")},
+    )
+
+    created = client.post("/jobs", json={"query": "test", "context": {}, "session_id": "s1"})
+    assert created.status_code == 200
+    job_id = created.json()["job_id"]
+
+    cancel_resp = client.post(f"/jobs/{job_id}/cancel")
+    assert cancel_resp.status_code == 200
+    cancel_body = cancel_resp.json()
+    assert cancel_body["job_id"] == job_id
+    assert cancel_body["status"] in {"cancel_requested", "cancelled"}
+
+    latest = None
+    for _ in range(40):
+        status_resp = client.get(f"/jobs/{job_id}")
+        assert status_resp.status_code == 200
+        latest = status_resp.json()
+        if latest["status"] == "cancelled":
+            break
+        time.sleep(0.05)
+
+    assert latest is not None
+    assert latest["status"] == "cancelled"
+
+
+def test_jobs_retry_terminal_job(monkeypatch, tmp_path) -> None:
+    client = build_client(
+        monkeypatch,
+        settings_overrides={"job_db_path": str(tmp_path / "jobs_retry.db")},
+    )
+
+    created = client.post("/jobs", json={"query": "test", "context": {}, "session_id": "s1"})
+    assert created.status_code == 200
+    source_job_id = created.json()["job_id"]
+
+    for _ in range(30):
+        status_resp = client.get(f"/jobs/{source_job_id}")
+        assert status_resp.status_code == 200
+        if status_resp.json()["status"] in {"succeeded", "degraded", "failed", "cancelled"}:
+            break
+        time.sleep(0.05)
+
+    retry_resp = client.post(f"/jobs/{source_job_id}/retry")
+    assert retry_resp.status_code == 200
+    retry_body = retry_resp.json()
+    assert retry_body["retry_of"] == source_job_id
+    assert retry_body["job_id"] != source_job_id
+    assert retry_resp.headers.get("X-Retry-Of") == source_job_id
+
+
+def test_jobs_retry_non_terminal_conflict(monkeypatch, tmp_path) -> None:
+    def slow_run_agent(
+        query: str,
+        context: dict[str, Any],
+        session_id: str | None,
+        event_sink=None,
+        request_id: str | None = None,
+    ) -> RunResponse:
+        del query, context, session_id, event_sink, request_id
+        time.sleep(0.3)
+        return make_response("slow done")
+
+    client = build_client(
+        monkeypatch,
+        run_agent_impl=slow_run_agent,
+        settings_overrides={"job_db_path": str(tmp_path / "jobs_retry_conflict.db")},
+    )
+
+    created = client.post("/jobs", json={"query": "test", "context": {}, "session_id": "s1"})
+    assert created.status_code == 200
+    job_id = created.json()["job_id"]
+
+    conflict_resp = client.post(f"/jobs/{job_id}/retry")
+    assert conflict_resp.status_code == 409
 
 
 def test_error_type_aggregation(monkeypatch) -> None:

@@ -9,13 +9,14 @@ from time import perf_counter
 from uuid import uuid4
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from agent.agent import run_agent
 from backend.governance import build_degraded_response, is_timeout_error, run_with_governance
-from backend.models import RunRequest, RunResponse
+from backend.job_queue import TERMINAL_STATUSES, JobQueueRunner, get_job_runner
+from backend.models import JobCancelResponse, JobCreateResponse, JobStatusResponse, RunRequest, RunResponse
 from backend.rate_limit import get_rate_limiter
 from backend.security import ensure_request_auth_from_key, validate_request_security
 from backend.settings import Settings
@@ -26,6 +27,7 @@ _error_stats_lock = RLock()
 _error_stats: Counter[str] = Counter()
 _stability_stats_lock = RLock()
 _stability_stats: Counter[str] = Counter()
+_job_runner: JobQueueRunner | None = None
 
 
 def _log_event(event: str, **fields: object) -> None:
@@ -125,6 +127,29 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _require_job_runner(current_settings: Settings) -> JobQueueRunner:
+    global _job_runner
+    if _job_runner is None:
+        _job_runner = get_job_runner(current_settings)
+        _job_runner.start()
+    return _job_runner
+
+
+@app.on_event("startup")
+async def _startup_job_runner() -> None:
+    global _job_runner
+    _job_runner = get_job_runner(Settings.from_env())
+    _job_runner.start()
+
+
+@app.on_event("shutdown")
+async def _shutdown_job_runner() -> None:
+    global _job_runner
+    if _job_runner is not None:
+        _job_runner.stop()
+    _job_runner = None
 
 
 def _ensure_api_key(current_settings: Settings) -> None:
@@ -635,6 +660,177 @@ async def run_stream(request: RunRequest, http_request: Request) -> StreamingRes
             "X-RateLimit-Remaining": str(max(0, remaining)),
         },
     )
+
+
+def _job_to_status_response(job: dict[str, object]) -> JobStatusResponse:
+    response_obj = job.get("response")
+    run_response: RunResponse | None = None
+    if isinstance(response_obj, dict):
+        run_response = RunResponse.model_validate(response_obj)
+    return JobStatusResponse(
+        job_id=str(job["job_id"]),
+        status=str(job["status"]),
+        created_at=float(job["created_at"]),
+        updated_at=float(job["updated_at"]),
+        error_message=(str(job["error_message"]) if job.get("error_message") else None),
+        response=run_response,
+    )
+
+
+@app.post("/jobs", response_model=JobCreateResponse)
+async def create_job(request: RunRequest, http_request: Request, http_response: Response) -> JobCreateResponse:
+    current_settings = Settings.from_env()
+    _ensure_api_key(current_settings)
+    request_id = str(uuid4())
+    _validate_run_request_security("jobs_submit", request_id, http_request, request, current_settings)
+    remaining, limit = _check_rate_limit(http_request, request.session_id, current_settings, request_id, "jobs_submit")
+    http_response.headers["X-RateLimit-Limit"] = str(limit)
+    http_response.headers["X-RateLimit-Remaining"] = str(max(0, remaining))
+
+    runner = _require_job_runner(current_settings)
+    created = runner.submit(request, request_id=request_id)
+    _log_event(
+        "job_created",
+        request_id=request_id,
+        job_id=created["job_id"],
+        session_id=request.session_id or "default",
+        idempotency_key=(request.idempotency_key or "").strip() or None,
+    )
+    return JobCreateResponse(
+        job_id=str(created["job_id"]),
+        status=str(created["status"]),
+        created_at=float(created["created_at"]),
+        retry_of=None,
+    )
+
+
+@app.get("/jobs/{job_id}", response_model=JobStatusResponse)
+async def get_job(job_id: str, http_request: Request) -> JobStatusResponse:
+    current_settings = Settings.from_env()
+    _ensure_metrics_auth(http_request, current_settings)
+    runner = _require_job_runner(current_settings)
+    job = runner.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    return _job_to_status_response(job)
+
+
+@app.post("/jobs/{job_id}/cancel", response_model=JobCancelResponse)
+async def cancel_job(job_id: str, http_request: Request) -> JobCancelResponse:
+    current_settings = Settings.from_env()
+    _ensure_metrics_auth(http_request, current_settings)
+    runner = _require_job_runner(current_settings)
+    result = runner.cancel(job_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    job, cancelled, message = result
+    _log_event(
+        "job_cancel",
+        job_id=job_id,
+        status=job["status"],
+        cancelled=cancelled,
+        message=message,
+    )
+    return JobCancelResponse(
+        job_id=str(job["job_id"]),
+        status=str(job["status"]),
+        cancelled=bool(cancelled),
+        message=message,
+    )
+
+
+@app.post("/jobs/{job_id}/retry", response_model=JobCreateResponse)
+async def retry_job(job_id: str, http_request: Request, http_response: Response) -> JobCreateResponse:
+    current_settings = Settings.from_env()
+    _ensure_metrics_auth(http_request, current_settings)
+    runner = _require_job_runner(current_settings)
+    request_id = str(uuid4())
+    try:
+        retried = runner.retry(job_id, request_id=request_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if retried is None:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    http_response.headers["X-Retry-Of"] = job_id
+    _log_event(
+        "job_retried",
+        source_job_id=job_id,
+        new_job_id=retried["job_id"],
+        request_id=request_id,
+    )
+    return JobCreateResponse(
+        job_id=str(retried["job_id"]),
+        status=str(retried["status"]),
+        created_at=float(retried["created_at"]),
+        retry_of=job_id,
+    )
+
+
+@app.get("/jobs/{job_id}/events")
+async def get_job_events(
+    job_id: str,
+    http_request: Request,
+    since_id: int = Query(default=0, ge=0),
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> dict[str, object]:
+    current_settings = Settings.from_env()
+    _ensure_metrics_auth(http_request, current_settings)
+    runner = _require_job_runner(current_settings)
+    job = runner.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    events = runner.list_events_since(job_id, last_event_id=since_id, limit=limit)
+    return {
+        "job_id": job_id,
+        "status": job["status"],
+        "events": events,
+        "terminal": str(job["status"]) in TERMINAL_STATUSES,
+    }
+
+
+@app.get("/jobs/{job_id}/stream")
+async def stream_job_events(job_id: str, http_request: Request) -> StreamingResponse:
+    current_settings = Settings.from_env()
+    _ensure_metrics_auth(http_request, current_settings)
+    runner = _require_job_runner(current_settings)
+    job = runner.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    async def event_generator():
+        last_id = 0
+        idle_loops = 0
+        while True:
+            events = runner.list_events_since(job_id, last_event_id=last_id, limit=200)
+            if events:
+                idle_loops = 0
+            for event in events:
+                last_id = int(event["id"])
+                payload: dict[str, object] = {
+                    "job_id": job_id,
+                    "event_id": event["id"],
+                    "type": event["type"],
+                    "content": event["content"],
+                }
+                if payload["type"] == "error" and isinstance(payload["content"], dict):
+                    message = payload["content"].get("message")
+                    if isinstance(message, str):
+                        payload["content"] = message
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+            refreshed = runner.get_job(job_id)
+            if refreshed is None:
+                break
+            if str(refreshed["status"]) in TERMINAL_STATUSES and not events:
+                break
+
+            if not events:
+                idle_loops += 1
+                if idle_loops % 20 == 0:
+                    yield f"data: {json.dumps({'job_id': job_id, 'type': 'heartbeat'}, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.25)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 if __name__ == "__main__":

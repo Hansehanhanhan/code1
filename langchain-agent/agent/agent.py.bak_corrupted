@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import logging
@@ -42,9 +42,7 @@ TOOL_KEYWORDS: dict[str, tuple[str, ...]] = {
 }
 
 BROAD_QUERY_KEYWORDS = ("综合", "整体", "全面", "排查", "诊断", "分析全部", "全链路", "all", "overall")
-REQUIRED_CONTEXT_KEYS = ("merchant_id", "time_range")
 
-# 会话记忆：{session_id: [(user_query, assistant_answer), ...]}
 # 事件回调类型：用于 SSE 逐步推送 Agent 执行事件。
 EventSink = Callable[[dict[str, Any]], None]
 # 工具函数类型：输入 query/context，输出结构化字典结果。
@@ -66,7 +64,7 @@ def _preview(value: Any, max_len: int = 200) -> str:
 
 
 def _extract_thought(action_log: str) -> str:
-    # 从 ReAct 日志中提取 Thought 文本，便于前端可视化展示。
+    # 从 ReAct 日志中提取 Thought 片段，便于前端展示。
     match = re.search(r"Thought:\s*(.*?)(?:\nAction:|\Z)", action_log, flags=re.DOTALL)
     if not match:
         return ""
@@ -188,9 +186,8 @@ class ReActTraceCallbackHandler(BaseCallbackHandler):
         )
 
     def on_tool_end(self, output: Any, **kwargs: Any) -> Any:
-        # 在工具执行结束时补全 Observation 与耗时。
+        # ?????????? Observation ????
         if self._pending is None:
-            self._loop_index += 1
             self._pending = {
                 "loop_index": self._loop_index,
                 "thought": "",
@@ -242,9 +239,8 @@ class ReActTraceCallbackHandler(BaseCallbackHandler):
         self._pending = None
 
     def on_tool_error(self, error: BaseException, **kwargs: Any) -> Any:
-        # 工具报错也记录到 steps，避免中断时无 action/observation。
+        # ???????? steps??????? action/observation?
         if self._pending is None:
-            return
         duration_ms = max(0, int((perf_counter() - self._pending["started_at"]) * 1000))
         self.total_tool_latency_ms += duration_ms
         error_message = str(error)
@@ -281,26 +277,23 @@ class ReActTraceCallbackHandler(BaseCallbackHandler):
             error_type=type(error).__name__,
             error_message=error_message,
         )
-        self._pending = None
-
+    # ?????????? Markdown ?????
+    cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", text, flags=re.DOTALL)
 
 def _cleanup_markdown(text: str) -> str:
-    # 为前端展示做兜底清洗：去掉可能出现的 Markdown 粗体标记。
-    cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", text, flags=re.DOTALL)
-    return cleaned.replace("**", "")
-
+    # 涓哄墠绔睍绀哄仛鍏滃簳娓呮礂锛氬幓鎺夊彲鑳藉嚭鐜扮殑 Markdown 绮椾綋鏍囪銆?    cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", text, flags=re.DOTALL)
+    # ?? session_id?????????????????????
+    if session_id is None:
 
 def _normalize_session_id(session_id: str | None) -> str:
-    # 统一 session_id，空值时回退到默认会话。
-    if session_id is None:
+    # 缁熶竴 session_id锛岀┖鍊兼椂鍥為€€鍒伴粯璁や細璇濄€?    if session_id is None:
         return DEFAULT_SESSION_ID
     normalized = session_id.strip()
-    return normalized if normalized else DEFAULT_SESSION_ID
-
+    # ??????? ReAct ??????????????
+    turns = session_store.get_history(session_id)
 
 def _get_history_text(session_store: SessionStore, session_id: str) -> str:
-    # 将历史对话拼成纯文本，注入到当前 ReAct 提示中。
-    turns = session_store.get_history(session_id)
+    # 灏嗗巻鍙插璇濇嫾鎴愮函鏂囨湰锛屾敞鍏ュ埌褰撳墠 ReAct 鎻愮ず涓€?    turns = session_store.get_history(session_id)
     if not turns:
         return ""
 
@@ -314,12 +307,11 @@ def _get_history_text(session_store: SessionStore, session_id: str) -> str:
 def _append_history(
     session_store: SessionStore,
     settings: Settings,
-    session_id: str,
-    query: str,
+    # ????? N ?????????????????
+    session_store.append_turn(
     final_answer: str,
 ) -> None:
-    # 只保留最近 N 轮，避免上下文无限膨胀。
-    session_store.append_turn(
+    # 鍙繚鐣欐渶杩?N 杞紝閬垮厤涓婁笅鏂囨棤闄愯啫鑳€銆?    session_store.append_turn(
         session_id,
         query,
         final_answer,
@@ -329,7 +321,7 @@ def _append_history(
 
 
 def _parse_tool_input(tool_input: str) -> tuple[str, dict[str, Any]]:
-    # ReAct 工具输入约定是 JSON 字符串：{"query": "...", "context": {...}}
+    # ReAct 宸ュ叿杈撳叆绾﹀畾鏄?JSON 瀛楃涓诧細{"query": "...", "context": {...}}
     raw = tool_input.strip()
     if not raw:
         return "", {}
@@ -388,118 +380,13 @@ def _should_short_circuit(query: str, selected_tool_names: list[str]) -> bool:
     return True
 
 
-def _missing_context_keys(context: dict[str, Any]) -> list[str]:
-    missing: list[str] = []
-    for key in REQUIRED_CONTEXT_KEYS:
-        value = context.get(key)
-        if value is None:
-            missing.append(key)
-            continue
-        if isinstance(value, str) and not value.strip():
-            missing.append(key)
-    return missing
-
-
-def _build_clarification_response(
-    query: str,
-    context: dict[str, Any],
-    session_id: str,
-    missing_keys: list[str],
-) -> RunResponse:
-    field_labels = {
-        "merchant_id": "商家ID（merchant_id）",
-        "time_range": "分析时间范围（time_range）",
-    }
-    asks = [field_labels.get(key, key) for key in missing_keys]
-    ask_text = "、".join(asks)
-    final_answer = (
-        "为保证分析结论可执行，我需要先补齐关键信息。\n"
-        f"请补充：{ask_text}。\n"
-        "建议示例：\n"
-        "1. merchant_id: demo-001\n"
-        "2. time_range: last_7_days\n"
-        "补充后我会继续输出根因与行动方案。"
-    )
-    return RunResponse(
-        final_answer=final_answer,
-        steps=[
-            StepRecord(
-                name="Clarification",
-                input={"query": query, "context": context, "session_id": session_id},
-                output={"missing_context_keys": missing_keys},
-                duration_ms=0,
-            )
-        ],
-        metrics=Metrics(
-            latency_ms=0,
-            fallback_used=False,
-            llm_latency_ms=0,
-            tool_latency_ms=0,
-            loop_count=0,
-            retrieve_hits=0,
-        ),
-    )
-
-
-def _extract_evidence_from_observation(observation: Any) -> list[str]:
-    if not isinstance(observation, dict):
-        return []
-    lines: list[str] = []
-    tool_name = str(observation.get("tool", "")).strip()
-    summary = str(observation.get("summary", "")).strip()
-    if tool_name and summary:
-        lines.append(f"{tool_name}: {summary}")
-    data = observation.get("data")
-    if tool_name == "retrieve_knowledge" and isinstance(data, dict):
-        matches = data.get("matches")
-        if isinstance(matches, list):
-            sources: list[str] = []
-            for item in matches:
-                if not isinstance(item, dict):
-                    continue
-                source = item.get("source")
-                if isinstance(source, str) and source.strip() and source not in sources:
-                    sources.append(source.strip())
-                if len(sources) >= 3:
-                    break
-            if sources:
-                lines.append(f"retrieve_knowledge sources: {', '.join(sources)}")
-    return lines
-
-
-def _collect_evidence_lines(steps: list[StepRecord]) -> list[str]:
-    lines: list[str] = []
-    seen: set[str] = set()
-    for step in steps:
-        observation = step.output.get("observation")
-        if observation is None:
-            continue
-        for line in _extract_evidence_from_observation(observation):
-            normalized = line.strip()
-            if not normalized or normalized in seen:
-                continue
-            seen.add(normalized)
-            lines.append(normalized)
-    return lines[:5]
-
-
-def _append_evidence_block(final_answer: str, evidence_lines: list[str]) -> str:
-    if not evidence_lines:
-        return final_answer
-    block = ["证据来源："]
-    for idx, line in enumerate(evidence_lines, start=1):
-        block.append(f"{idx}. {line}")
-    return f"{final_answer}\n" + "\n".join(block)
-
-
 def _build_react_tool(
     name: str,
-    description: str,
-    tool_fn: ToolFn,
+    # ??? Python ????? LangChain ???? StructuredTool?
+    def _runner(tool_input: str) -> str:
     request_cache: dict[str, dict[str, Any]] | None = None,
 ) -> StructuredTool:
-    # 把本地 Python 函数包装成 LangChain 可调用的 StructuredTool。
-    def _runner(tool_input: str) -> str:
+    # 鎶婃湰鍦?Python 鍑芥暟鍖呰鎴?LangChain 鍙皟鐢ㄧ殑 StructuredTool銆?    def _runner(tool_input: str) -> str:
         query, context = _parse_tool_input(tool_input)
         cache_key = f"{name}|{query}|{json.dumps(context, ensure_ascii=False, sort_keys=True)}"
         if request_cache is not None and cache_key in request_cache:
@@ -520,18 +407,21 @@ def _build_react_tool(
 
 
 def _build_tools(
-    settings: Settings,
-    selected_tool_names: list[str] | None = None,
+    # ???????????????? + ?? RAG ?????
+    selected = set(selected_tool_names or [*ANALYSIS_TOOL_NAMES, "retrieve_knowledge"])
     request_cache: dict[str, dict[str, Any]] | None = None,
 ) -> list[StructuredTool]:
-    # 工具注册表：基础业务工具 + 可选 RAG 检索工具。
-    selected = set(selected_tool_names or [*ANALYSIS_TOOL_NAMES, "retrieve_knowledge"])
+    # 宸ュ叿娉ㄥ唽琛細鍩虹涓氬姟宸ュ叿 + 鍙€?RAG 妫€绱㈠伐鍏枫€?    selected = set(selected_tool_names or [*ANALYSIS_TOOL_NAMES, "retrieve_knowledge"])
     tools: list[StructuredTool] = []
     if "traffic_analyze" in selected:
         tools.append(
             _build_react_tool(
                 name="traffic_analyze",
-                description="Analyze traffic trend. Input JSON must contain query and can include context.",
+                description=(
+                    "娴侀噺鍒嗘瀽宸ュ叿銆傞€傜敤浜庢洕鍏?鐐瑰嚮/璁垮瓒嬪娍鎺掓煡銆?
+                    "浼樺厛杈撳叆 JSON 瀛楃涓诧細{\"query\":\"...\",\"context\":{...}}锛?
+                    "涔熷彲鐩存帴杈撳叆绾枃鏈?query銆?
+                ),
                 tool_fn=traffic_analyze,
                 request_cache=request_cache,
             )
@@ -540,7 +430,11 @@ def _build_tools(
         tools.append(
             _build_react_tool(
                 name="ads_analyze",
-                description="Analyze ad efficiency and ROI. Input JSON must contain query and can include context.",
+                description=(
+                    "骞垮憡鍒嗘瀽宸ュ叿銆傞€傜敤浜?ROI/CPC/鎶曟斁鏁堢巼闂銆?
+                    "浼樺厛杈撳叆 JSON 瀛楃涓诧細{\"query\":\"...\",\"context\":{...}}锛?
+                    "涔熷彲鐩存帴杈撳叆绾枃鏈?query銆?
+                ),
                 tool_fn=ads_analyze,
                 request_cache=request_cache,
             )
@@ -549,7 +443,11 @@ def _build_tools(
         tools.append(
             _build_react_tool(
                 name="inventory_check",
-                description="Check inventory risk. Input JSON must contain query and can include context.",
+                description=(
+                    "搴撳瓨妫€鏌ュ伐鍏枫€傞€傜敤浜庣己璐с€佺Н鍘嬨€佸懆杞闄╁垎鏋愩€?
+                    "浼樺厛杈撳叆 JSON 瀛楃涓诧細{\"query\":\"...\",\"context\":{...}}锛?
+                    "涔熷彲鐩存帴杈撳叆绾枃鏈?query銆?
+                ),
                 tool_fn=inventory_check,
                 request_cache=request_cache,
             )
@@ -558,20 +456,24 @@ def _build_tools(
         tools.append(
             _build_react_tool(
                 name="product_diagnose",
-                description="Diagnose product conversion. Input JSON must contain query and can include context.",
+                description=(
+                    "鍟嗗搧璇婃柇宸ュ叿銆傞€傜敤浜庤浆鍖栫巼銆佽鎯呴〉銆佹爣棰樹富鍥俱€佸畾浠烽棶棰樸€?
+                    "浼樺厛杈撳叆 JSON 瀛楃涓诧細{\"query\":\"...\",\"context\":{...}}锛?
+                    "涔熷彲鐩存帴杈撳叆绾枃鏈?query銆?
+                ),
                 tool_fn=product_diagnose,
                 request_cache=request_cache,
-            )
-        )
+        # ???? RAG ????? Agent????? SOP/?????
+        tools.append(
 
     if settings.rag_enabled and "retrieve_knowledge" in selected:
-        # 开启 RAG 时，允许 Agent 主动检索 SOP/策略知识片段。
-        tools.append(
+        # 寮€鍚?RAG 鏃讹紝鍏佽 Agent 涓诲姩妫€绱?SOP/绛栫暐鐭ヨ瘑鐗囨銆?        tools.append(
             _build_react_tool(
                 name="retrieve_knowledge",
                 description=(
-                    "Retrieve SOP and policy snippets from local knowledge base. "
-                    "Input JSON must contain query and can include context."
+                    "鐭ヨ瘑妫€绱㈠伐鍏枫€傜敤浜庢绱?SOP/瑙勫垯/绛栫暐鐗囨銆?
+                    "浼樺厛杈撳叆 JSON 瀛楃涓诧細{\"query\":\"...\",\"context\":{...}}锛?
+                    "涔熷彲鐩存帴杈撳叆绾枃鏈?query銆?
                 ),
                 tool_fn=lambda query, context: retrieve_knowledge(query, context, settings),
                 request_cache=request_cache,
@@ -605,21 +507,20 @@ def create_agent(
     """Create a ReAct Agent executor."""
 
     callback_list = callbacks or []
-    # LLM 客户端：支持 OpenAI 兼容接口。
+    # LLM client: OpenAI-compatible endpoint.
     llm = ChatOpenAI(
         openai_api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
         model=settings.openai_model,
         temperature=0.3,
-        callbacks=callback_list,
-    )
+    # ????????????????????????
+    knowledge_hint = (
     tools = _build_tools(settings, selected_tool_names=selected_tool_names, request_cache=request_cache)
 
-    # 根据配置动态提示模型是否可用知识检索工具。
-    knowledge_hint = (
-        "If the question needs SOP or policy knowledge, call retrieve_knowledge first."
+    # 鏍规嵁閰嶇疆鍔ㄦ€佹彁绀烘ā鍨嬫槸鍚﹀彲鐢ㄧ煡璇嗘绱㈠伐鍏枫€?    knowledge_hint = (
+        "濡傛灉闂娑夊強 SOP/瑙勫垯/鏀跨瓥锛岃浼樺厛璋冪敤 retrieve_knowledge 鍙栬瘉銆?
         if settings.rag_enabled
-        else "Knowledge retrieval tool is disabled. Use only available analysis tools."
+        else "鐭ヨ瘑妫€绱㈠伐鍏峰綋鍓嶄笉鍙敤锛岃浠呬娇鐢ㄥ彲鐢ㄥ垎鏋愬伐鍏峰彇璇併€?
     )
 
     template = """You are an ecommerce operations analyst assistant.
@@ -651,20 +552,36 @@ Use this exact ReAct format:
 Question: user question
 Thought: your reasoning in Chinese
 Action: one of [{tool_names}]
-Action Input: a JSON string, e.g. {{"query":"traffic dropped this week","context":{{"merchant_id":"demo-001"}}}}
+Action Input: prefer JSON string, e.g. {{"query":"鏈懆娴侀噺涓嬫粦鎺掓煡","context":{{"merchant_id":"demo-001","category":"retail"}}}}
+Action Input can also be plain Chinese query text when needed.
 Observation: tool output
 ... (repeat Thought/Action/Action Input/Observation as needed)
-Thought: If evidence is already sufficient, stop tool calls and provide final answer.
+Thought: Before Final Answer, you should complete at least one valid tool call unless it is a pure greeting.
 Thought: I now know the final answer
 Final Answer: final response to user in Chinese
 
-Begin!
+Example 1 (must call tool):
+Question: 鏈懆娴侀噺涓嬫粦锛岃鍏堟煡璇佸啀缁欏缓璁?Thought: 鍏堝仛娴侀噺鎺掓煡锛屾嬁鍒板瑙傛暟鎹悗鍐嶆€荤粨
+Action: traffic_analyze
+Action Input: {{"query":"鏈懆娴侀噺涓嬫粦锛岃鎺掓煡","context":{{"merchant_id":"demo-001","time_range":"last_7_days","category":"retail"}}}}
+Observation: (tool output)
+Thought: 宸叉湁璇佹嵁锛岀粰鍑虹粨鏋勫寲寤鸿
+Final Answer: ...
 
-Question: {input}
+Example 2 (knowledge needed):
+Question: 骞垮憡浼樺寲鏀跨瓥鏈夊摢浜涙敞鎰忕偣
+Thought: 璇ラ棶棰樻秹鍙婅鍒欎笌鏀跨瓥锛屽厛妫€绱㈢煡璇嗗簱
+Action: retrieve_knowledge
+Action Input: {{"query":"骞垮憡浼樺寲鏀跨瓥娉ㄦ剰鐐?,"context":{{"merchant_id":"demo-001","category":"retail"}}}}
+Observation: (tool output)
+Thought: 鍩轰簬妫€绱㈣瘉鎹緭鍑哄缓璁?Final Answer: ...
+
+Begin!
+    # ?????????????????? ReAct Agent?
+    prompt = PromptTemplate.from_template(template).partial(knowledge_hint=knowledge_hint)
 Thought:{agent_scratchpad}"""
 
-    # 先注入动态提示，再构建 ReAct Agent。
-    prompt = PromptTemplate.from_template(template).partial(knowledge_hint=knowledge_hint)
+    # 鍏堟敞鍏ュ姩鎬佹彁绀猴紝鍐嶆瀯寤?ReAct Agent銆?    prompt = PromptTemplate.from_template(template).partial(knowledge_hint=knowledge_hint)
     agent = create_react_agent(llm=llm, tools=tools, prompt=prompt)
     return AgentExecutor(
         agent=agent,
@@ -691,16 +608,6 @@ def run_agent(
     session_store = get_session_store(settings)
 
     sid = _normalize_session_id(session_id)
-    missing_keys = _missing_context_keys(context or {})
-    if missing_keys:
-        response = _build_clarification_response(query, context, sid, missing_keys)
-        _log_event(
-            "agent_clarification_requested",
-            request_id=request_id,
-            session_id=sid,
-            missing_context_keys=missing_keys,
-        )
-        return response
     trace_callback = ReActTraceCallbackHandler(
         event_sink=event_sink,
         session_id=sid,
@@ -738,14 +645,13 @@ def run_agent(
         tool_output = _run_single_tool(tool_name, settings, query, context)
         tool_duration_ms = max(0, int((perf_counter() - tool_started) * 1000))
         final_answer = _cleanup_markdown(
-            "问题摘要：命中单一高相关工具，使用快速模式直达输出。\n"
-            f"核心发现：{tool_output.get('summary', '暂无')}\n"
-            "行动计划：\n"
-            "1. 先执行工具返回的高优先建议。\n"
-            "2. 观察 24-72 小时关键指标变化。\n"
-            "3. 若未改善，再进入多工具综合诊断。"
+            "闂鎽樿锛氬懡涓崟涓€楂樼浉鍏冲伐鍏凤紝浣跨敤蹇€熸ā寮忕洿杈捐緭鍑恒€俓n"
+            f"鏍稿績鍙戠幇锛歿tool_output.get('summary', '鏆傛棤')}\n"
+            "琛屽姩璁″垝锛歕n"
+            "1. 鍏堟墽琛屽伐鍏疯繑鍥炵殑楂樹紭鍏堝缓璁€俓n"
+            "2. 瑙傚療 24-72 灏忔椂鍏抽敭鎸囨爣鍙樺寲銆俓n"
+            "3. 鑻ユ湭鏀瑰杽锛屽啀杩涘叆澶氬伐鍏风患鍚堣瘖鏂€?
         )
-        final_answer = _append_evidence_block(final_answer, _extract_evidence_from_observation(tool_output))
         _append_history(session_store, settings, sid, query, final_answer)
         latency_ms = max(0, int((perf_counter() - started_at) * 1000))
         steps: list[StepRecord] = [
@@ -811,13 +717,11 @@ def run_agent(
         raise
 
     latency_ms = int((perf_counter() - started_at) * 1000)
-
-    final_answer = _cleanup_markdown(str(result["output"]))
-    final_answer = _append_evidence_block(final_answer, _collect_evidence_lines(trace_callback.steps))
+    # steps = ReAct ???? + ???? Agent ?????
+    steps: list[StepRecord] = trace_callback.steps + [
     _append_history(session_store, settings, sid, query, final_answer)
 
-    # steps = ReAct 每轮轨迹 + 一条总览 Agent 结果。
-    steps: list[StepRecord] = trace_callback.steps + [
+    # steps = ReAct 姣忚疆杞ㄨ抗 + 涓€鏉℃€昏 Agent 缁撴灉銆?    steps: list[StepRecord] = trace_callback.steps + [
         StepRecord(
             name="Agent",
             input={"query": query, "context": context, "session_id": sid},
