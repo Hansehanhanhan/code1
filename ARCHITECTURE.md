@@ -60,7 +60,7 @@
 
 ### 5.2 API 层（FastAPI）
 职责：
-1. 提供 `POST /run`、`POST /run_stream`、`GET /health`、`GET /metrics/*`。
+1. 提供 `POST /run`、`POST /run_stream`、`POST /jobs`、`POST /jobs/{job_id}/cancel`、`POST /jobs/{job_id}/retry`、`GET /jobs/{job_id}`、`GET /jobs/{job_id}/events`、`GET /jobs/{job_id}/stream`、`GET /health`、`GET /metrics/*`。
 2. 执行通用治理逻辑：鉴权、限流、输入长度限制、注入检查。
 3. 调用 `run_agent` 并封装响应模型。
 
@@ -110,6 +110,110 @@
 2. 进入循环：Thought -> Action -> Action Input -> Observation。
 3. 达到停止条件后输出 Final Answer。
 4. 记录步骤轨迹和阶段耗时。
+
+### 6.4 `/jobs` 异步任务流程
+1. 接收任务创建请求，支持可选 `idempotency_key` 幂等提交。
+2. 命中相同幂等键时复用已有任务，不重复入队。
+3. 未命中时创建 `queued` 任务并入队，由后台 Worker 消费执行。
+4. 支持任务取消：
+   - `queued -> cancelled`
+   - `running -> cancel_requested`（当前实现为协作式取消）
+5. 支持终态任务重试，生成新任务并返回新 `job_id`。
+6. 启动恢复机制：
+   - `running -> queued`
+   - `cancel_requested -> cancelled`
+   - 自动重入队 `queued` 任务
+
+### 6.5 请求时序图（基于当前实现）
+
+#### 6.5.1 `/run` 同步链路
+```mermaid
+sequenceDiagram
+    participant FE as Frontend
+    participant API as backend/main.py
+    participant SEC as security.py
+    participant RL as rate_limit.py
+    participant GOV as governance.py
+    participant AG as agent/agent.py
+    participant SS as session_store.py
+    participant TO as tools/tools.py
+    participant RAG as rag/knowledge_base.py
+
+    FE->>API: POST /run (query, context, session_id)
+    API->>SEC: validate_request_security()
+    API->>RL: get_rate_limiter().allow()
+    API->>GOV: run_with_governance(_invoke)
+    GOV->>AG: run_agent(...)
+    AG->>SS: get_history(session_id)
+    AG->>AG: route_tools + clarification/early-stop
+    AG->>TO: traffic/ads/inventory/product tools
+    AG->>RAG: retrieve_knowledge() (if routed)
+    AG->>SS: append_turn(...)
+    AG-->>GOV: RunResponse
+    GOV-->>API: response + attempts_used
+    API-->>FE: 200 RunResponse (+rate-limit headers)
+```
+
+#### 6.5.2 `/run_stream` 流式链路
+```mermaid
+sequenceDiagram
+    participant FE as Frontend
+    participant API as backend/main.py
+    participant SEC as security.py
+    participant RL as rate_limit.py
+    participant GOV as governance.py
+    participant AG as agent/agent.py
+
+    FE->>API: POST /run_stream
+    API->>SEC: validate_request_security()
+    API->>RL: allow()
+    API->>GOV: run_with_governance(_invoke with event_sink)
+    GOV->>AG: run_agent(..., event_sink)
+    AG-->>API: agent_action/tool_observation events
+    API-->>FE: SSE data frames
+    AG-->>API: final RunResponse
+    API-->>FE: final_response + stream_metrics
+```
+
+#### 6.5.3 `/jobs` 异步链路（含幂等/恢复/取消/重试）
+```mermaid
+sequenceDiagram
+    participant FE as Frontend
+    participant API as backend/main.py
+    participant JQ as backend/job_queue.py
+    participant DB as SQLite jobs.db
+    participant GOV as governance.py
+    participant AG as agent/agent.py
+
+    FE->>API: POST /jobs (optional idempotency_key)
+    API->>JQ: submit(request, request_id)
+    JQ->>DB: get_job_by_idempotency_key(key)?
+    alt key exists
+        JQ-->>API: existing job (no re-enqueue)
+    else new job
+        JQ->>DB: create_job(status=queued)
+        JQ->>JQ: queue.put(job_id)
+        JQ-->>API: created job
+    end
+    API-->>FE: JobCreateResponse
+
+    Note over JQ: Worker thread consumes queue
+    JQ->>DB: set_status(running)
+    JQ->>GOV: run_with_governance(_invoke)
+    GOV->>AG: run_agent(..., event_sink)
+    JQ->>DB: append_event(...)
+    JQ->>DB: set_response(status=succeeded/degraded) or set_status(failed/cancelled)
+
+    FE->>API: POST /jobs/{id}/cancel
+    API->>JQ: cancel(id)
+    JQ->>DB: queued->cancelled OR running->cancel_requested
+    API-->>FE: JobCancelResponse
+
+    FE->>API: POST /jobs/{id}/retry
+    API->>JQ: retry(id)
+    JQ->>DB: create new queued job
+    API-->>FE: new JobCreateResponse
+```
 
 ## 7. RAG 检索流程与参数
 

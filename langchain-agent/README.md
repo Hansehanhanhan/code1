@@ -12,6 +12,24 @@
 - 仅本地开源 embedding（sentence-transformers）
 - 基础限流（按 `ip+session_id` 固定窗口）
 
+## 最新更新（2026-04-28）
+
+### 1) Jobs 能力升级
+- 新增 `POST /jobs/{job_id}/cancel`：支持取消排队任务与运行中任务的取消请求。
+- 新增 `POST /jobs/{job_id}/retry`：支持终态任务重试，返回新的 `job_id`。
+- `POST /jobs` 支持 `idempotency_key`，重复提交同 key 会复用已有任务（防重复入队）。
+
+### 2) 任务恢复与一致性
+- JobQueue 启动时自动恢复未完成任务：
+  - `running -> queued`
+  - `cancel_requested -> cancelled`
+  - 自动重入队 `queued` 任务
+- 补充恢复日志与事件，提升可观测性与排障效率。
+
+### 3) Agent 体验增强
+- 缺少关键上下文（`merchant_id`、`time_range`）时优先返回澄清问题。
+- 最终答案自动附加“证据来源”区块，提升结论可追溯性。
+
 ## 目录
 
 ```text
@@ -84,6 +102,8 @@ $env:NEXT_PUBLIC_BACKEND_URL='http://127.0.0.1:8000'
 - `POST /run_stream`
 - `POST /jobs`（异步提交任务）
 - `GET /jobs/{job_id}`（查询任务状态与结果）
+- `POST /jobs/{job_id}/cancel`（取消任务）
+- `POST /jobs/{job_id}/retry`（重试任务）
 - `GET /jobs/{job_id}/events`（拉取任务事件）
 - `GET /jobs/{job_id}/stream`（SSE 订阅任务事件）
 - `GET /metrics/error_types`
@@ -141,7 +161,8 @@ curl -X POST "http://127.0.0.1:8000/jobs" \
   -d '{
     "query": "请给我一份本周流量下滑的分步排查方案",
     "context": {"merchant_id":"demo-001","category":"retail"},
-    "session_id": "demo-session-job-001"
+    "session_id": "demo-session-job-001",
+    "idempotency_key": "job-demo-001-last7d-v1"
   }'
 ```
 
@@ -149,6 +170,20 @@ curl -X POST "http://127.0.0.1:8000/jobs" \
 
 ```bash
 curl "http://127.0.0.1:8000/jobs/<job_id>" \
+  -H "X-API-Key: replace_with_strong_secret"
+```
+
+取消任务 `/jobs/{job_id}/cancel`：
+
+```bash
+curl -X POST "http://127.0.0.1:8000/jobs/<job_id>/cancel" \
+  -H "X-API-Key: replace_with_strong_secret"
+```
+
+重试任务 `/jobs/{job_id}/retry`：
+
+```bash
+curl -X POST "http://127.0.0.1:8000/jobs/<job_id>/retry" \
   -H "X-API-Key: replace_with_strong_secret"
 ```
 
@@ -198,6 +233,10 @@ $env:PYTHONPATH='.'
 - `/health`、`/run`、`/run_stream` 接口行为
 - 会话存储（memory/redis fallback）逻辑
 - 限流器（fixed window + fallback）逻辑
+- Jobs 取消/重试/幂等复用/重启恢复逻辑
+- Agent 澄清追问与证据来源附加逻辑
+
+当前测试结果：`58 passed`（2026-04-28）。
 
 ## 结构化日志
 
