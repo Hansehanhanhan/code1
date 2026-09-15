@@ -223,6 +223,66 @@ def test_run_stream_emits_events(monkeypatch) -> None:
     assert stream_metrics["event_completeness"] is True
 
 
+def test_run_stream_forwards_key_step_context_updates(monkeypatch) -> None:
+    def fake_run_agent(
+        query: str,
+        context: dict[str, Any],
+        session_id: str | None,
+        event_sink=None,
+        request_id: str | None = None,
+    ) -> RunResponse:
+        del query, context, session_id, request_id
+        assert event_sink is not None
+        event_sink(
+            {
+                "type": "key_step",
+                "content": {"kind": "context_update", "reason": "traffic_analysis_completed", "new_version": 1},
+            }
+        )
+        event_sink(
+            {
+                "type": "key_step",
+                "content": {
+                    "kind": "direction_repair",
+                    "candidate_previews": ["候选A：流量下降归因于大促"],
+                },
+            }
+        )
+        event_sink(
+            {
+                "type": "key_step",
+                "content": {
+                    "kind": "context_update_rejected",
+                    "error_type": "StateConflictError",
+                    "error": "version conflict",
+                },
+            }
+        )
+        return make_response("记忆闭环完成")
+
+    client = build_client(monkeypatch, run_agent_impl=fake_run_agent)
+    payload = {"query": "test", "context": {}, "session_id": "s1"}
+
+    with client.stream("POST", "/run_stream", json=payload) as response:
+        assert response.status_code == 200
+        body = "".join(response.iter_text())
+
+    event_payloads: list[dict[str, Any]] = []
+    for segment in body.split("data: ")[1:]:
+        raw = segment.split("\n\n", 1)[0].strip()
+        raw = raw.replace("\\n\\n", "").strip()
+        if raw:
+            event_payloads.append(json.loads(raw))
+
+    key_steps = [event for event in event_payloads if event.get("type") == "key_step"]
+    kinds = [step["content"]["kind"] for step in key_steps]
+    assert "context_update" in kinds
+    assert "direction_repair" in kinds
+    assert "context_update_rejected" in kinds
+    context_update = next(step["content"] for step in key_steps if step["content"]["kind"] == "context_update")
+    assert context_update["new_version"] == 1
+
+
 def test_jobs_submit_and_get(monkeypatch, tmp_path) -> None:
     client = build_client(
         monkeypatch,

@@ -191,6 +191,94 @@ def test_update_context_accepts_valid_evidence_and_updates_state() -> None:
     assert store.get_state("s1").verified_findings[0].id == "f-1"
 
 
+def test_update_context_tool_emits_key_steps_via_sink() -> None:
+    store = InMemorySessionStore()
+    evidence = {
+        "evidence_id": "req-1:tool-0001",
+        "request_id": "req-1",
+        "tool_call_id": "tool-0001",
+        "tool": "traffic_analyze",
+        "observation_hash": "sha256:abc",
+    }
+    emitted: list[dict] = []
+    tool = _build_update_context_tool(
+        session_store=store,
+        session_id="s1",
+        request_id="req-1",
+        evidence_records=[evidence],
+        ttl_seconds=100,
+        event_sink=emitted.append,
+    )
+    tool.invoke(
+        json.dumps(
+            {
+                "reason": "traffic_analysis_completed",
+                "expected_version": 0,
+                "add_findings": [
+                    {
+                        "id": "f-1",
+                        "claim": "流量下降",
+                        "confidence": "high",
+                        "evidence": {
+                            "evidence_id": "req-1:tool-0001",
+                            "request_id": "req-1",
+                            "observation_hash": "sha256:abc",
+                        },
+                    }
+                ],
+                "reject_candidates": ["候选A：流量下降归因于大促"],
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    key_steps = [event for event in emitted if event.get("type") == "key_step"]
+    kinds = [event["content"]["kind"] for event in key_steps]
+    assert "context_update" in kinds
+    assert "direction_repair" in kinds
+    context_update = next(
+        event["content"] for event in key_steps if event["content"]["kind"] == "context_update"
+    )
+    assert context_update["new_version"] == 1
+    direction_repair = next(
+        event["content"] for event in key_steps if event["content"]["kind"] == "direction_repair"
+    )
+    assert any("候选A" in preview for preview in direction_repair["candidate_previews"])
+
+    rejected_tool = _build_update_context_tool(
+        session_store=store,
+        session_id="s1",
+        request_id="req-1",
+        evidence_records=[],
+        ttl_seconds=100,
+        event_sink=emitted.append,
+    )
+    rejected_tool.invoke(
+        json.dumps(
+            {
+                "reason": "invalid_reference",
+                "expected_version": 1,
+                "add_findings": [
+                    {
+                        "id": "f-2",
+                        "claim": "无证据结论",
+                        "confidence": "low",
+                        "evidence": {
+                            "evidence_id": "missing",
+                            "request_id": "req-1",
+                            "observation_hash": "sha256:wrong",
+                        },
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    kinds_after_reject = [event["content"]["kind"] for event in emitted if event.get("type") == "key_step"]
+    assert "context_update_rejected" in kinds_after_reject
+
+
 def test_update_context_rejects_invalid_evidence_without_state_change() -> None:
     import json
 

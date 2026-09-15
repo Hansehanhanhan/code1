@@ -1030,6 +1030,7 @@ def _build_update_context_tool(
     request_id: str,
     evidence_records: list[dict[str, Any]],
     ttl_seconds: int,
+    event_sink: EventSink | None = None,
 ) -> StructuredTool:
     def _update_context(tool_input: str) -> str:
         try:
@@ -1056,14 +1057,36 @@ def _build_update_context_tool(
                 reason=patch.reason,
                 new_version=updated.version,
             )
+            if event_sink is not None:
+                event_sink(
+                    {
+                        "type": "key_step",
+                        "content": {
+                            "kind": "context_update",
+                            "reason": patch.reason,
+                            "new_version": updated.version,
+                        },
+                    }
+                )
             if patch.reject_candidates:
+                candidate_previews = [_preview(item, max_len=80) for item in patch.reject_candidates]
                 _log_event(
                     "key_step",
                     request_id=request_id,
                     session_id=session_id,
                     kind="direction_repair",
-                    candidate_previews=[_preview(item, max_len=80) for item in patch.reject_candidates],
+                    candidate_previews=candidate_previews,
                 )
+                if event_sink is not None:
+                    event_sink(
+                        {
+                            "type": "key_step",
+                            "content": {
+                                "kind": "direction_repair",
+                                "candidate_previews": candidate_previews,
+                            },
+                        }
+                    )
             return json.dumps(
                 {"ok": True, "message": "Context updated.", "new_version": updated.version},
                 ensure_ascii=False,
@@ -1076,6 +1099,17 @@ def _build_update_context_tool(
                 error_type=type(exc).__name__,
                 error_message=str(exc),
             )
+            if event_sink is not None:
+                event_sink(
+                    {
+                        "type": "key_step",
+                        "content": {
+                            "kind": "context_update_rejected",
+                            "error_type": type(exc).__name__,
+                            "error": str(exc)[:240],
+                        },
+                    }
+                )
             hint = (
                 " Allowed evidence reference fields: evidence_id, request_id, observation_hash only "
                 "(copy the evidence block from the latest tool Observation verbatim)."
@@ -1114,6 +1148,7 @@ def _build_tools(
     evidence_records: list[dict[str, Any]] | None = None,
     evidence_counter: dict[str, int] | None = None,
     ttl_seconds: int = 3600,
+    event_sink: EventSink | None = None,
 ) -> list[StructuredTool]:
     # 工具注册表：基础业务工具 + 可选 RAG 检索工具。
     selected = set(selected_tool_names or [*ANALYSIS_TOOL_NAMES, "retrieve_knowledge"])
@@ -1187,6 +1222,7 @@ def _build_tools(
                 request_id=request_id,
                 evidence_records=evidence_records if evidence_records is not None else [],
                 ttl_seconds=ttl_seconds,
+                event_sink=event_sink,
             )
         )
 
@@ -1218,6 +1254,7 @@ def create_agent(
     request_id: str = "",
     evidence_records: list[dict[str, Any]] | None = None,
     evidence_counter: dict[str, int] | None = None,
+    event_sink: EventSink | None = None,
 ) -> AgentExecutor:
     """Create a tool-calling Agent executor."""
 
@@ -1242,6 +1279,7 @@ def create_agent(
         evidence_records=evidence_records,
         evidence_counter=evidence_counter,
         ttl_seconds=settings.session_ttl_seconds,
+        event_sink=event_sink,
     )
 
     # 根据配置动态提示模型是否可用知识检索工具。
@@ -1318,6 +1356,7 @@ def run_agent(
         request_id=execution_request_id,
         evidence_records=trace_callback.evidence_records,
         evidence_counter=evidence_counter,
+        event_sink=event_sink,
     )
 
     history_text = _get_history_text(session_store, sid)
