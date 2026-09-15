@@ -141,6 +141,7 @@ pre {
 
 /* 输入框和下拉框 */
 input[type="text"],
+input[type="password"],
 select {
   width: 100%;
   border: 1px solid rgba(13, 47, 92, 0.18);
@@ -154,6 +155,7 @@ select {
 }
 
 input[type="text"]:focus,
+input[type="password"]:focus,
 select:focus {
   border-color: rgba(35, 79, 141, 0.55);
   box-shadow: 0 0 0 4px rgba(35, 79, 141, 0.12);
@@ -208,7 +210,7 @@ button.danger-btn {
 
 button:disabled {
   opacity: 0.72;
-  cursor: progress;
+  cursor: not-allowed;
 }
 
 .results-grid {
@@ -474,5 +476,335 @@ button:disabled {
 @media (max-width: 960px) {
   .results-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+/* Tabs 布局 */
+.tabs-shell {
+  margin-top: 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.tabs-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tab-btn {
+  padding: 10px 18px;
+  font-size: 0.92rem;
+  background: rgba(255, 255, 255, 0.6);
+  color: #34404c;
+  box-shadow: none;
+  border: 1px solid rgba(13, 47, 92, 0.14);
+}
+
+.tab-btn:hover {
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.tab-btn-active {
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  color: white;
+  border-color: transparent;
+}
+
+/* 警告堆叠 */
+.warning-stack {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+/* key_step 里程碑 */
+.milestone-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 0 14px;
+  border-bottom: 1px solid rgba(13, 47, 92, 0.08);
+  margin-bottom: 14px;
+}
+
+.key-step-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  border: 1px solid transparent;
+  max-width: 100%;
+}
+
+.key-step-kind {
+  white-space: nowrap;
+}
+
+.key-step-detail {
+  font-size: 0.78rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 340px;
+}
+
+.tone-blue {
+  color: #0d2f5c;
+  background: rgba(35, 79, 141, 0.12);
+  border-color: rgba(35, 79, 141, 0.22);
+}
+
+.tone-green {
+  color: #124d2b;
+  background: rgba(27, 90, 44, 0.12);
+  border-color: rgba(27, 90, 44, 0.22);
+}
+
+.tone-amber {
+  color: #5c4306;
+  background: rgba(170, 123, 15, 0.14);
+  border-color: rgba(170, 123, 15, 0.28);
+}
+
+.tone-red {
+  color: #7f1f08;
+  background: rgba(177, 59, 29, 0.12);
+  border-color: rgba(177, 59, 29, 0.24);
+}
+
+/* 诊断状态面板 */
+.state-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.state-head h2 {
+  margin: 0;
+}
+
+.version-chip {
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #0d2f5c;
+  background: rgba(35, 79, 141, 0.14);
+  border: 1px solid rgba(35, 79, 141, 0.2);
+}
+
+.muted-state {
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+
+.state-h3 {
+  margin: 18px 0 10px;
+  font-size: 0.95rem;
+}
+
+.state-h3:first-of-type {
+  margin-top: 0;
+}
+
+.slot-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.slot-chip {
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(13, 47, 92, 0.14);
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: #1f2a35;
+}
+
+.findings-list {
+  display: grid;
+  gap: 10px;
+}
+
+.finding-row {
+  border: 1px solid rgba(13, 47, 92, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.finding-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.finding-head code {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.confidence-chip {
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #0d2f5c;
+  background: rgba(35, 79, 141, 0.12);
+  padding: 3px 8px;
+  border-radius: 999px;
+}
+
+.finding-claim {
+  margin: 0;
+  font-size: 0.94rem;
+  line-height: 1.6;
+}
+
+.finding-evidence {
+  font-size: 0.76rem;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.plain-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
+
+.constraint-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.constraint-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid rgba(13, 47, 92, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 8px 12px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.constraint-badge {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.cs-satisfied {
+  color: #124d2b;
+  background: rgba(27, 90, 44, 0.12);
+  border: 1px solid rgba(27, 90, 44, 0.22);
+}
+
+.cs-unsatisfied {
+  color: #7f1f08;
+  background: rgba(177, 59, 29, 0.12);
+  border: 1px solid rgba(177, 59, 29, 0.24);
+}
+
+.cs-unchecked {
+  color: #3d4a57;
+  background: rgba(60, 74, 87, 0.1);
+  border: 1px solid rgba(60, 74, 87, 0.18);
+}
+
+.confidence-bar {
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(13, 47, 92, 0.1);
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.confidence-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), #4f8fd0);
+}
+
+.confidence-label {
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* 任务 SSE 事件 */
+.job-event-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.job-event {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(13, 47, 92, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.68);
+  padding: 8px 12px;
+  font-size: 0.86rem;
+}
+
+.job-event-label {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  background: rgba(13, 47, 92, 0.08);
+  padding: 3px 8px;
+  border-radius: 999px;
+}
+
+.job-event-summary {
+  color: #1f2a35;
+  word-break: break-word;
+}
+
+.step-ms {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.step-ms span {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.step-header span {
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+
+@media (max-width: 960px) {
+  .state-head,
+  .constraint-row {
+    align-items: flex-start;
   }
 }
