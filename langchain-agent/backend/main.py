@@ -18,7 +18,15 @@ from backend.governance import build_degraded_response, is_timeout_error, run_wi
 from backend.job_queue import TERMINAL_STATUSES, JobQueueRunner, get_job_runner
 from backend.models import JobCancelResponse, JobCreateResponse, JobStatusResponse, RunRequest, RunResponse
 from backend.rate_limit import get_rate_limiter
-from backend.security import ensure_request_auth_from_key, validate_request_security
+from backend.security import (
+    authorize_identity,
+    ensure_job_ownership,
+    ensure_merchant_access,
+    ensure_session_ownership,
+    ensure_session_read_access,
+    validate_request_security,
+)
+from backend.session_store import get_session_store
 from backend.settings import Settings
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -115,8 +123,8 @@ settings = Settings.from_env()
 _cors_origins, _cors_allow_credentials = _build_cors_config(settings)
 
 app = FastAPI(
-    title="Merchant Ops Copilot (LangChain ReAct)",
-    description="LangChain ReAct backend for merchant operations assistant.",
+    title="Merchant Ops Copilot (LangChain Agent)",
+    description="LangChain Agent backend for merchant operations assistant.",
     version="0.4.0",
 )
 
@@ -217,6 +225,39 @@ def _validate_run_request_security(
         error_type = f"HTTP{exc.status_code}"
         _record_error(endpoint, error_type)
         _record_stability("input_rejected_total", endpoint)
+        _log_event(
+            "request_rejected",
+            endpoint=endpoint,
+            request_id=request_id,
+            status_code=exc.status_code,
+            reason=str(exc.detail),
+        )
+        raise
+
+
+def _resolve_and_enforce_identity(
+    endpoint: str,
+    request_id: str,
+    http_request: Request,
+    request: RunRequest,
+    current_settings: Settings,
+):
+    try:
+        identity = authorize_identity(http_request.headers.get("x-api-key"), current_settings)
+        ensure_merchant_access(identity, request.context or {})
+        session_id = (request.session_id or "").strip()
+        if session_id:
+            store = get_session_store(current_settings)
+            ensure_session_ownership(
+                store,
+                session_id,
+                identity,
+                ttl_seconds=current_settings.session_ttl_seconds,
+            )
+        return identity
+    except HTTPException as exc:
+        error_type = f"HTTP{exc.status_code}"
+        _record_error(endpoint, error_type)
         _log_event(
             "request_rejected",
             endpoint=endpoint,
@@ -355,22 +396,48 @@ async def _run_agent_with_governance(
 
 
 def _ensure_metrics_auth(http_request: Request, current_settings: Settings) -> None:
-    ensure_request_auth_from_key(http_request.headers.get("x-api-key"), current_settings)
+    authorize_identity(http_request.headers.get("x-api-key"), current_settings)
 
 
 @app.get("/")
 async def root() -> dict:
     return {
-        "message": "Merchant Ops Copilot (LangChain ReAct)",
+        "message": "Merchant Ops Copilot (LangChain Agent)",
         "version": "0.4.0",
         "framework": "LangChain",
-        "agent_type": "ReAct",
+        "agent_type": "tool_calling",
     }
 
 
 @app.get("/health")
 async def health() -> dict:
     return {"status": "healthy"}
+
+
+@app.get("/sessions/{session_id}")
+async def session_state(session_id: str, http_request: Request) -> dict:
+    current_settings = Settings.from_env()
+    _ensure_metrics_auth(http_request, current_settings)
+    identity = authorize_identity(http_request.headers.get("x-api-key"), current_settings)
+    normalized_session_id = session_id.strip() or "default"
+    store = get_session_store(current_settings)
+    ensure_session_read_access(store, normalized_session_id, identity)
+    state = store.get_state(normalized_session_id)
+    return {
+        "session_id": normalized_session_id,
+        "version": state.version,
+        "context_slots": state.context_slots,
+        "verified_findings": [item.model_dump(mode="json") for item in state.verified_findings],
+        "current_candidates": state.current_candidates,
+        "unresolved_constraints": state.unresolved_constraints,
+        "validity_concerns": state.validity_concerns,
+        "rejected_candidates": state.rejected_candidates,
+        "next_step_plan": state.next_step_plan,
+        "constraint_status": state.constraint_status,
+        "answer_confidence": state.answer_confidence,
+        "verified_citations": state.verified_citations,
+        "history_turns": len(store.get_history(normalized_session_id)),
+    }
 
 
 @app.get("/metrics/error_types")
@@ -394,6 +461,7 @@ async def run(request: RunRequest, http_request: Request, http_response: Respons
 
     request_id = str(uuid4())
     _validate_run_request_security("run", request_id, http_request, request, current_settings)
+    _resolve_and_enforce_identity("run", request_id, http_request, request, current_settings)
     session_id = request.session_id or "default"
     remaining, limit = _check_rate_limit(http_request, request.session_id, current_settings, request_id, "run")
     http_response.headers["X-RateLimit-Limit"] = str(limit)
@@ -483,6 +551,7 @@ async def run_stream(request: RunRequest, http_request: Request) -> StreamingRes
 
     request_id = str(uuid4())
     _validate_run_request_security("run_stream", request_id, http_request, request, current_settings)
+    _resolve_and_enforce_identity("run_stream", request_id, http_request, request, current_settings)
     session_id = request.session_id or "default"
     remaining, limit = _check_rate_limit(http_request, request.session_id, current_settings, request_id, "run_stream")
     started_at = perf_counter()
@@ -677,18 +746,40 @@ def _job_to_status_response(job: dict[str, object]) -> JobStatusResponse:
     )
 
 
+def _resolve_job_with_access(
+    job_id: str,
+    http_request: Request,
+    current_settings: Settings,
+):
+    identity = authorize_identity(http_request.headers.get("x-api-key"), current_settings)
+    runner = _require_job_runner(current_settings)
+    job = runner.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    ensure_job_ownership(identity, job)
+    return runner, job
+
+
 @app.post("/jobs", response_model=JobCreateResponse)
 async def create_job(request: RunRequest, http_request: Request, http_response: Response) -> JobCreateResponse:
     current_settings = Settings.from_env()
     _ensure_api_key(current_settings)
     request_id = str(uuid4())
     _validate_run_request_security("jobs_submit", request_id, http_request, request, current_settings)
+    identity = _resolve_and_enforce_identity("jobs_submit", request_id, http_request, request, current_settings)
     remaining, limit = _check_rate_limit(http_request, request.session_id, current_settings, request_id, "jobs_submit")
     http_response.headers["X-RateLimit-Limit"] = str(limit)
     http_response.headers["X-RateLimit-Remaining"] = str(max(0, remaining))
 
     runner = _require_job_runner(current_settings)
-    created = runner.submit(request, request_id=request_id)
+    owner_tenant_id = identity.tenant_id if identity is not None else None
+    owner_user_id = identity.user_id if identity is not None else None
+    created = runner.submit(
+        request,
+        request_id=request_id,
+        owner_tenant_id=owner_tenant_id,
+        owner_user_id=owner_user_id,
+    )
     _log_event(
         "job_created",
         request_id=request_id,
@@ -707,19 +798,14 @@ async def create_job(request: RunRequest, http_request: Request, http_response: 
 @app.get("/jobs/{job_id}", response_model=JobStatusResponse)
 async def get_job(job_id: str, http_request: Request) -> JobStatusResponse:
     current_settings = Settings.from_env()
-    _ensure_metrics_auth(http_request, current_settings)
-    runner = _require_job_runner(current_settings)
-    job = runner.get_job(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    _runner, job = _resolve_job_with_access(job_id, http_request, current_settings)
     return _job_to_status_response(job)
 
 
 @app.post("/jobs/{job_id}/cancel", response_model=JobCancelResponse)
 async def cancel_job(job_id: str, http_request: Request) -> JobCancelResponse:
     current_settings = Settings.from_env()
-    _ensure_metrics_auth(http_request, current_settings)
-    runner = _require_job_runner(current_settings)
+    runner, job = _resolve_job_with_access(job_id, http_request, current_settings)
     result = runner.cancel(job_id)
     if result is None:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
@@ -742,8 +828,7 @@ async def cancel_job(job_id: str, http_request: Request) -> JobCancelResponse:
 @app.post("/jobs/{job_id}/retry", response_model=JobCreateResponse)
 async def retry_job(job_id: str, http_request: Request, http_response: Response) -> JobCreateResponse:
     current_settings = Settings.from_env()
-    _ensure_metrics_auth(http_request, current_settings)
-    runner = _require_job_runner(current_settings)
+    runner, _ = _resolve_job_with_access(job_id, http_request, current_settings)
     request_id = str(uuid4())
     try:
         retried = runner.retry(job_id, request_id=request_id)
@@ -774,11 +859,7 @@ async def get_job_events(
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> dict[str, object]:
     current_settings = Settings.from_env()
-    _ensure_metrics_auth(http_request, current_settings)
-    runner = _require_job_runner(current_settings)
-    job = runner.get_job(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    runner, job = _resolve_job_with_access(job_id, http_request, current_settings)
     events = runner.list_events_since(job_id, last_event_id=since_id, limit=limit)
     return {
         "job_id": job_id,
@@ -791,11 +872,7 @@ async def get_job_events(
 @app.get("/jobs/{job_id}/stream")
 async def stream_job_events(job_id: str, http_request: Request) -> StreamingResponse:
     current_settings = Settings.from_env()
-    _ensure_metrics_auth(http_request, current_settings)
-    runner = _require_job_runner(current_settings)
-    job = runner.get_job(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    runner, job = _resolve_job_with_access(job_id, http_request, current_settings)
 
     async def event_generator():
         last_id = 0

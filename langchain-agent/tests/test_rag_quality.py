@@ -137,6 +137,7 @@ def test_retrieve_knowledge_respects_strict_metadata_filter(monkeypatch) -> None
         degrade_on_error=True,
         app_auth_enabled=False,
         app_api_key=None,
+        identity_keys_path="api_keys.json",
         max_query_chars=2000,
         max_context_chars=8000,
         prompt_injection_guard_enabled=True,

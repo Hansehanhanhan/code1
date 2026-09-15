@@ -41,6 +41,7 @@ def make_settings(job_db_path: str, **overrides: Any) -> Settings:
         degrade_on_error=True,
         app_auth_enabled=False,
         app_api_key=None,
+        identity_keys_path="api_keys.json",
         max_query_chars=2000,
         max_context_chars=8000,
         prompt_injection_guard_enabled=True,
@@ -92,6 +93,8 @@ def seed_jobs(db_path: Path) -> None:
         query="queued query",
         context={},
         session_id="s1",
+        owner_tenant_id=None,
+        owner_user_id=None,
         created_at=now,
     )
     store.create_job(
@@ -101,6 +104,8 @@ def seed_jobs(db_path: Path) -> None:
         query="running query",
         context={},
         session_id="s2",
+        owner_tenant_id=None,
+        owner_user_id=None,
         created_at=now + 0.01,
     )
     store.set_status("job-running", "running")
@@ -111,6 +116,8 @@ def seed_jobs(db_path: Path) -> None:
         query="cancel req query",
         context={},
         session_id="s3",
+        owner_tenant_id=None,
+        owner_user_id=None,
         created_at=now + 0.02,
     )
     store.set_status("job-cancel-req", "cancel_requested", error_message="cancel requested before restart")

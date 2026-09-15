@@ -1,10 +1,12 @@
-﻿# Merchant Ops Copilot (LangChain ReAct)
+﻿# Merchant Ops Copilot (LangChain Agent)
 
 基于 LangChain 的商家运营 Agent，当前实现为：
-- ReAct 推理
+- Tool-calling Agent 推理（`create_tool_calling_agent`，模型通过函数调用收集证据并维护诊断状态）
 - 工具路由 + 早停（减少无效多轮调用）
 - SSE 流式事件
 - `session_id` 会话记忆（支持内存/Redis）
+- 结构化诊断记忆：`context_slots`、`DiagnosticState`、增量 patch 与 Evidence 校验
+- `update_context` 工具：模型提交提议，服务端校验并通过版本 CAS 合并
 - RAG 检索工具（`retrieve_knowledge`）
 - RAG 质量升级：中文切片 + 混合检索（BM25 + 向量）+ 召回后重排 + metadata 过滤
 - 稳定性治理：超时 + 重试 + 降级 + 按接口限流
@@ -12,9 +14,26 @@
 - 仅本地开源 embedding（sentence-transformers）
 - 基础限流（按 `ip+session_id` 固定窗口）
 
-## 最新更新（2026-04-28）
+## 最新更新（2026-09-14）
 
-### 1) Jobs 能力升级
+### 1) AREX 对齐的记忆闭环（tool-calling Agent 化）
+- Agent 从文本 ReAct（`create_react_agent`）切换为 **function-calling tool-calling**（`create_tool_calling_agent`），工具参数改为结构化 `{query, context}`，`update_context` 输入为 JSON 字符串 patch。
+- 新增 `TOOL_CALLING_SYSTEM_PROMPT`：声明「每请求至少调用一次 `update_context`」，触发时机、few-shot patch（含证据复制约束）、逐约束状态上报（`update_constraint_status`）与置信度（`set_answer_confidence`）。
+- 真实 deepseek-flash 探针验证：模型**自主调用 `update_context`**（如 `reason="traffic_trend_analysis_completed_with_conflicting_observations"`），写出带合法 evidence 的高置信 findings，并自报 `channel_level_breakdown`/`funnel_level_breakdown` 等约束状态与置信度——上一轮 `finding_count=0` 的缺口已关闭。
+- 新增 P3 关键步事件：`first_evidence`（首条带证据分析结论）、`context_update`、`direction_repair`（提交 `reject_candidates` 时）。
+- 路由/完整路径迭代上限 8 → 12，给冲突排查留出收敛空间。
+
+### 2) 状态模型扩展（服务端确定性审计 + 证据提升）
+- `DiagnosticState`/`DiagnosticPatch` 新增（全部可选、向后兼容）：`constraint_status`（逐约束 satisfied/unsatisfied/unchecked）、`answer_confidence`（0..1）、`verified_citations`。
+- `_finalize_request_state` 兜底升级：把**带证据的分析工具结论**确定性提升为 findings 并回填 citations；按必需上下文 + 未解决约束计算 `constraint_status` 与 `answer_confidence`；无新增内容时幂等跳过。
+- 新增 AREX 外环 refine：`_run_refine_pass` 针对 `unsatisfied` 约束定向补查工具（关键字路由 + 请求级缓存），预算上限 `MAX_REFINE_ROUNDS=2`。
+- `GET /sessions/{session_id}` 返回新增三个字段。
+
+### 3) Redis 专项测试（`tests/test_redis_store.py`）
+- 独立 `/15` 测试库并自带 `skipif`（Redis 不可用自动跳过）。
+- 覆盖：CAS 版本冲突拒绝、内存/Redis 同序列状态一致、跨实例共享、owner/state TTL 过期、历史上限淘汰、并发更新无丢失（WATCH+CAS）、state 缺失时合并 context_slots、finding+evidence 完整往返。
+
+### 3) Jobs 能力升级
 - 新增 `POST /jobs/{job_id}/cancel`：支持取消排队任务与运行中任务的取消请求。
 - 新增 `POST /jobs/{job_id}/retry`：支持终态任务重试，返回新的 `job_id`。
 - `POST /jobs` 支持 `idempotency_key`，重复提交同 key 会复用已有任务（防重复入队）。
@@ -38,6 +57,7 @@ langchain-agent/
 │   └── agent.py
 ├── backend/
 │   ├── main.py
+│   ├── diagnostic_state.py
 │   ├── models.py
 │   ├── rate_limit.py
 │   ├── session_store.py
@@ -82,10 +102,50 @@ $env:PYTHONPATH='.'
 & "..\.venv\Scripts\python.exe" -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
+### 本地内存模式
+
+当前推荐先使用内存会话，不依赖 Docker 或 Redis：
+
+```env
+SESSION_BACKEND=memory
+```
+
+内存模式支持跨请求的 `context_slots` 和诊断状态，但服务重启后会丢失会话。
+
+### Redis 模式（可选）
+
+Redis 模式需要本机 Redis 服务可用：
+
+```env
+SESSION_BACKEND=redis
+REDIS_URL=redis://127.0.0.1:6379/0
+```
+
+Redis 状态更新使用版本 CAS；Redis 不可用时，应用会按现有治理逻辑回退到内存存储。
+
+## 结构化记忆
+
+每个会话维护以下信息：
+
+- `context_slots`：商家、时间范围等跨轮输入槽位；当前请求显式 context 优先覆盖历史值。
+- `verified_findings`：经过 Evidence 引用校验的诊断结论；旧结论通过 `superseded` 保留审计链，不直接删除。
+- `current_candidates`、`rejected_candidates`：当前假设和已排除方向。
+- `validity_concerns`、`unresolved_constraints`：证据疑点和未解决约束。
+- `next_step_plan`：下一步计划。
+- `constraint_status`：逐约束验证状态（`satisfied` / `unsatisfied` / `unchecked`），由模型声明或服务端审计填充。
+- `answer_confidence`：模型给出的置信度（0..1），服务端审计仅在模型未填写时回填。
+- `verified_citations`：已采纳的 evidence_id 引用列表，用于下游审计。
+
+工具执行先生成 `evidence_id` 和 `observation_hash`，模型再通过 `update_context` 提交增量 patch。服务端校验请求归属、Evidence hash、状态版本和容量限制后才写入状态。
+
+**服务端兜底（不依赖 LLM）**：无论模型是否调用 `update_context`，每次请求结束后服务端都会确定性沉淀本轮工具证据——带 evidence 的分析工具结论提升为 `verified_findings` 并回填 citations；工具 `recommendations` 进入 `current_candidates`，执行异常工具的 `summary` 进入 `unresolved_constraints`；同时计算 `constraint_status` 与 `answer_confidence`。无新增内容时跳过写入（CAS 幂等）。若存在 `unsatisfied` 约束，还会触发一轮定向 refine 补查（上限 2 轮）。因此真实多轮中 `state_version` 会随新证据递增，且第二轮省略上下文时直接从 `context_slots` 补全、不再重复澄清。
+
+验证：`python scripts/real_multi_round_probe.py`（真实 API 两轮探针，结果写入 `_real_multi_probe_result.json`，验收 `finding_count >= 1` 且 `constraint_status` 非空）；`python scripts/e2e_verify.py`（真实 LLM × 真实 HTTP 端到端验证，默认自动拉起后端子进程，覆盖 `/run_stream` SSE 事件序列、`/sessions` 状态演化、`/run` 同步、`/jobs` 异步与 `/jobs/{id}/stream` 回放，结果写入 `_e2e_result.json`，任一断言不通过则 exit 1）。
+
 ## 前端联调（可选）
 
 ```powershell
-cd E:\code\code1\frontend
+cd E:\code\langchain-agent\frontend
 npm install
 npm run dev
 ```
@@ -106,6 +166,7 @@ $env:NEXT_PUBLIC_BACKEND_URL='http://127.0.0.1:8000'
 - `POST /jobs/{job_id}/retry`（重试任务）
 - `GET /jobs/{job_id}/events`（拉取任务事件）
 - `GET /jobs/{job_id}/stream`（SSE 订阅任务事件）
+- `GET /sessions/{session_id}`（读取会话诊断状态快照，含归属校验）
 - `GET /metrics/error_types`
 - `GET /metrics/stability`
 
@@ -236,7 +297,7 @@ $env:PYTHONPATH='.'
 - Jobs 取消/重试/幂等复用/重启恢复逻辑
 - Agent 澄清追问与证据来源附加逻辑
 
-当前测试结果：`58 passed`（2026-04-28）。
+当前测试结果：`131 passed`。其中 Fake LLM 记忆闭环（tool-calling Agent + ScriptedToolCallingModel）、确定性审计/refine 契约、缓存命中证据嵌入、工具输出按商家上下文确定性、`/jobs/{id}/stream` 回放与 `key_step`/`llm_observation` SSE 契约、Redis 专项测试均已覆盖；真实 API 探针（`real_multi_round_probe.py`）与端到端验证（`e2e_verify.py`）均已通过（`force_stopped=false`），验证模型自主调用 `update_context`、`finding_count >= 1`、`constraint_status` 非空，并在 HTTP 层闭环记忆。
 
 ## 结构化日志
 
@@ -394,8 +455,9 @@ time_range: last_7_days
 - `DEGRADE_ON_ERROR`：非超时错误是否降级返回（默认 `true`）
 
 ## 安全与鉴权配置
-- `APP_AUTH_ENABLED`：是否启用简单 API Key 鉴权（默认 `false`）
-- `APP_API_KEY`：服务鉴权密钥（`APP_AUTH_ENABLED=true` 时必填）
+- `APP_AUTH_ENABLED`：是否启用 API Key 鉴权（默认 `false`）
+- `APP_API_KEY`：服务管理员密钥（`APP_AUTH_ENABLED=true` 时必填，拥有全部商家与会话访问权）
+- `IDENTITY_KEYS_PATH`：身份注册表 JSON 路径（默认 `api_keys.json`），格式见 `api_keys.example.json`
 - `MAX_QUERY_CHARS`：`query` 最大长度（默认 `2000`）
 - `MAX_CONTEXT_CHARS`：`context` JSON 序列化后的最大长度（默认 `8000`）
 - `PROMPT_INJECTION_GUARD_ENABLED`：是否启用基础注入关键词拦截（默认 `true`）
@@ -403,8 +465,18 @@ time_range: last_7_days
 - `APP_CORS_ALLOW_CREDENTIALS`：是否允许凭证（默认 `false`；当 origin 为 `*` 时会强制关闭）
 - `AGENT_VERBOSE`：是否开启 Agent verbose 日志（默认 `false`）
 
+### 身份隔离（P0）
+启用 `APP_AUTH_ENABLED=true` 后，请求会在鉴权之外做三层校验：
+1. **API Key 身份映射**：请求的 `X-API-Key` 会解析为 `{user_id, tenant_id, merchant_ids}` 身份，来源为 `api_keys.json`（`IDENTITY_KEYS_PATH`）。管理员 `APP_API_KEY` 拥有所有权限。
+2. **session_id 所有者校验**：会话首次访问时绑定所有者，随后仅该身份可复用；其他用户复用同一 session_id 返回 `403`。
+3. **merchant_id 权限校验**：context 中声明的 `merchant_id` 必须在身份的 `merchant_ids` 内（空列表=全部），否则返回 `403`。
+
+任务（`/jobs`）在创建时记录所有者，读取/取消/重试/事件/流接口均校验归属，跨用户访问返回 `403`。
+`api_keys.json` 含真实密钥，已加入 `.gitignore`，不会提交；示例为 `api_keys.example.json`。
+
 说明：
 - 鉴权失败返回 `401 Unauthorized`。
+- 越权访问（商户/会话/任务）返回 `403 Forbidden`。
 - 输入超限返回 `413`。
 - 命中注入关键词规则返回 `400`。
 

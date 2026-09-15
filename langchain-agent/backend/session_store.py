@@ -7,6 +7,7 @@ from threading import RLock
 from typing import Protocol
 
 from backend.settings import Settings
+from backend.diagnostic_state import DiagnosticPatch, DiagnosticState, apply_diagnostic_patch
 
 logger = logging.getLogger("merchant_ops.session_store")
 
@@ -15,6 +16,18 @@ class SessionStore(Protocol):
     """会话存储统一协议（用于短期对话记忆）。"""
 
     def get_history(self, session_id: str) -> list[tuple[str, str]]:
+        ...
+
+    def get_owner(self, session_id: str) -> tuple[str, str] | None:
+        ...
+
+    def bind_owner(
+        self,
+        session_id: str,
+        owner: tuple[str, str],
+        *,
+        ttl_seconds: int,
+    ) -> None:
         ...
 
     def append_turn(
@@ -28,17 +41,69 @@ class SessionStore(Protocol):
     ) -> None:
         ...
 
+    def get_context_slots(self, session_id: str) -> dict[str, object]:
+        ...
+
+    def update_context_slots(
+        self,
+        session_id: str,
+        slots: dict[str, object],
+        *,
+        ttl_seconds: int,
+    ) -> None:
+        ...
+
+    def get_state(self, session_id: str) -> DiagnosticState:
+        ...
+
+    def update_state(
+        self,
+        session_id: str,
+        patch: DiagnosticPatch,
+        *,
+        ttl_seconds: int,
+    ) -> DiagnosticState:
+        ...
+
 
 class InMemorySessionStore:
     """内存会话存储：实现简单，但服务重启会丢失。"""
 
     def __init__(self) -> None:
-        self._data: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        self._data: dict[str, dict[str, object]] = defaultdict(
+            lambda: {"history": [], "context_slots": {}, "state": DiagnosticState()}
+        )
+        self._owners: dict[str, tuple[str, str]] = {}
         self._lock = RLock()
 
     def get_history(self, session_id: str) -> list[tuple[str, str]]:
         with self._lock:
-            return list(self._data.get(session_id, []))
+            record = self._data.get(session_id)
+            if record is None:
+                return []
+            return list(record["history"])
+
+    def get_owner(self, session_id: str) -> tuple[str, str] | None:
+        with self._lock:
+            return self._owners.get(session_id)
+
+    def bind_owner(
+        self,
+        session_id: str,
+        owner: tuple[str, str],
+        *,
+        ttl_seconds: int,
+    ) -> None:
+        del ttl_seconds  # In-memory backend does not support TTL.
+        with self._lock:
+            self._owners[session_id] = owner
+
+    def get_context_slots(self, session_id: str) -> dict[str, object]:
+        with self._lock:
+            record = self._data.get(session_id)
+            if record is None:
+                return {}
+            return dict(record["context_slots"])
 
     def append_turn(
         self,
@@ -51,11 +116,50 @@ class InMemorySessionStore:
     ) -> None:
         del ttl_seconds  # In-memory backend does not support TTL.
         with self._lock:
-            history = self._data[session_id]
+            record = self._data[session_id]
+            history = record["history"]
             history.append((query, final_answer))
             # 仅保留最近 N 轮，防止上下文无上限增长。
             if len(history) > max_history_turns:
-                self._data[session_id] = history[-max_history_turns:]
+                record["history"] = history[-max_history_turns:]
+
+    def update_context_slots(
+        self,
+        session_id: str,
+        slots: dict[str, object],
+        *,
+        ttl_seconds: int,
+    ) -> None:
+        current = self.get_state(session_id)
+        patch = DiagnosticPatch(
+            reason="context_slots_updated",
+            expected_version=current.version,
+            context_slots=slots,
+        )
+        self.update_state(session_id, patch, ttl_seconds=ttl_seconds)
+
+    def get_state(self, session_id: str) -> DiagnosticState:
+        with self._lock:
+            record = self._data.get(session_id)
+            if record is None:
+                return DiagnosticState()
+            return record["state"].model_copy(deep=True)
+
+    def update_state(
+        self,
+        session_id: str,
+        patch: DiagnosticPatch,
+        *,
+        ttl_seconds: int,
+    ) -> DiagnosticState:
+        del ttl_seconds  # In-memory backend does not support TTL.
+        with self._lock:
+            record = self._data[session_id]
+            current = record["state"]
+            updated = apply_diagnostic_patch(current, patch)
+            record["state"] = updated
+            record["context_slots"] = dict(updated.context_slots)
+            return updated.model_copy(deep=True)
 
 
 class RedisSessionStore:
@@ -71,6 +175,68 @@ class RedisSessionStore:
     @staticmethod
     def _key(session_id: str) -> str:
         return f"merchant_ops:session:{session_id}:history"
+
+    @staticmethod
+    def _context_key(session_id: str) -> str:
+        return f"merchant_ops:session:{session_id}:context"
+
+    @staticmethod
+    def _state_key(session_id: str) -> str:
+        return f"merchant_ops:session:{session_id}:state"
+
+    @staticmethod
+    def _owner_key(session_id: str) -> str:
+        return f"merchant_ops:session:{session_id}:owner"
+
+    def _decode_state(self, payload: str | None, session_id: str) -> DiagnosticState:
+        if payload:
+            try:
+                return DiagnosticState.model_validate_json(payload)
+            except ValueError:
+                logger.warning("invalid diagnostic state payload for session %s", session_id)
+        return DiagnosticState(context_slots=self.get_context_slots(session_id))
+
+    def get_state(self, session_id: str) -> DiagnosticState:
+        payload = self._client.get(self._state_key(session_id))
+        return self._decode_state(payload, session_id)
+
+    def get_owner(self, session_id: str) -> tuple[str, str] | None:
+        payload = self._client.get(self._owner_key(session_id))
+        if not payload:
+            return None
+        try:
+            value = json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(value, list) or len(value) != 2:
+            return None
+        user_id, tenant_id = value
+        if not isinstance(user_id, str) or not isinstance(tenant_id, str):
+            return None
+        return user_id, tenant_id
+
+    def bind_owner(
+        self,
+        session_id: str,
+        owner: tuple[str, str],
+        *,
+        ttl_seconds: int,
+    ) -> None:
+        self._client.set(
+            self._owner_key(session_id),
+            json.dumps([owner[0], owner[1]], ensure_ascii=False),
+            ex=ttl_seconds,
+        )
+
+    def get_context_slots(self, session_id: str) -> dict[str, object]:
+        payload = self._client.get(self._context_key(session_id))
+        if not payload:
+            return {}
+        try:
+            value = json.loads(payload)
+        except json.JSONDecodeError:
+            return {}
+        return value if isinstance(value, dict) else {}
 
     def get_history(self, session_id: str) -> list[tuple[str, str]]:
         key = self._key(session_id)
@@ -105,6 +271,55 @@ class RedisSessionStore:
         pipeline.ltrim(key, -max_history_turns, -1)
         pipeline.expire(key, ttl_seconds)
         pipeline.execute()
+
+    def update_context_slots(
+        self,
+        session_id: str,
+        slots: dict[str, object],
+        *,
+        ttl_seconds: int,
+    ) -> None:
+        current = self.get_state(session_id)
+        patch = DiagnosticPatch(
+            reason="context_slots_updated",
+            expected_version=current.version,
+            context_slots=slots,
+        )
+        self.update_state(session_id, patch, ttl_seconds=ttl_seconds)
+
+    def update_state(
+        self,
+        session_id: str,
+        patch: DiagnosticPatch,
+        *,
+        ttl_seconds: int,
+    ) -> DiagnosticState:
+        from redis.exceptions import WatchError
+
+        state_key = self._state_key(session_id)
+        context_key = self._context_key(session_id)
+        max_retries = 3
+        for _ in range(max_retries):
+            pipeline = self._client.pipeline(transaction=True)
+            try:
+                pipeline.watch(state_key)
+                current = self._decode_state(pipeline.get(state_key), session_id)
+                updated = apply_diagnostic_patch(current, patch)
+                pipeline.multi()
+                payload = updated.model_dump_json()
+                pipeline.set(state_key, payload, ex=ttl_seconds)
+                pipeline.set(
+                    context_key,
+                    json.dumps(updated.context_slots, ensure_ascii=False),
+                    ex=ttl_seconds,
+                )
+                pipeline.execute()
+                return updated
+            except WatchError:
+                continue
+            finally:
+                pipeline.reset()
+        raise StateConflictError(f"Redis state update conflicted after {max_retries} retries")
 
 
 _store_lock = RLock()

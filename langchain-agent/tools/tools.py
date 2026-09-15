@@ -1,14 +1,26 @@
 from __future__ import annotations
 
 from typing import Any, Dict
-from langchain.tools import StructuredTool, tool
+
+
+def _weak_signal(context: Dict[str, Any], ratio: float = 0.5) -> bool:
+    # 模拟工具按商家上下文给出确定性信号，与查询措辞无关：
+    # 避免模型对同一话题换措辞反复查询时，拿到相互矛盾的证据并陷入排查循环。
+    merchant = str(context.get("merchant_id", "") or "")
+    if merchant == "demo-001":
+        return True  # demo 商家固定演示“偏弱/下滑”分支，与探针叙事对齐
+    if not merchant:
+        return False
+    h = 0
+    for i, ch in enumerate(merchant):
+        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
+    return (h % 100) < int(ratio * 100)
 
 
 def traffic_analyze(query: str, context: Dict[str, Any]) -> Dict[str, Any]:
     """流量分析工具（模拟）。"""
 
-    lowered = f"{query} {context}".lower()
-    signal = "declining" if any(k in lowered for k in ["drop", "decline", "down", "下滑", "下降"]) else "stable"
+    signal = "declining" if _weak_signal(context, 0.4) else "stable"
     summary = (
         "流量呈下滑趋势，曝光和点击效率都在变弱。"
         if signal == "declining"
@@ -35,8 +47,7 @@ def traffic_analyze(query: str, context: Dict[str, Any]) -> Dict[str, Any]:
 def ads_analyze(query: str, context: Dict[str, Any]) -> Dict[str, Any]:
     """广告效率分析工具（模拟）。"""
 
-    lowered = f"{query} {context}".lower()
-    roi = 1.8 if any(k in lowered for k in ["roi", "poor", "bad", "drop", "下降", "变差"]) else 3.4
+    roi = 1.8 if _weak_signal(context, 0.35) else 3.4
     summary = "广告效率偏弱，ROI 低于预期阈值。" if roi < 2.5 else "广告效率可接受，存在进一步放量空间。"
 
     return {
@@ -58,8 +69,7 @@ def ads_analyze(query: str, context: Dict[str, Any]) -> Dict[str, Any]:
 def inventory_check(query: str, context: Dict[str, Any]) -> Dict[str, Any]:
     """库存风险检查工具（模拟）。"""
 
-    lowered = f"{query} {context}".lower()
-    stock_level = "overstock" if any(k in lowered for k in ["overstock", "excess", "slow-moving", "积压", "滞销"]) else "healthy"
+    stock_level = "overstock" if _weak_signal(context, 0.3) else "healthy"
     summary = "库存积压明显，建议配合活动加速去化。" if stock_level == "overstock" else "库存水位健康，暂无紧急风险。"
 
     return {
@@ -81,8 +91,7 @@ def inventory_check(query: str, context: Dict[str, Any]) -> Dict[str, Any]:
 def product_diagnose(query: str, context: Dict[str, Any]) -> Dict[str, Any]:
     """商品转化诊断工具（模拟）。"""
 
-    lowered = f"{query} {context}".lower()
-    conversion = 0.012 if any(k in lowered for k in ["conversion", "click", "low cvt", "转化", "点击"]) else 0.028
+    conversion = 0.012 if _weak_signal(context, 0.3) else 0.028
     summary = "商品转化偏弱，详情页内容或定价可能需要调整。" if conversion < 0.02 else "商品转化处于正常区间。"
 
     return {

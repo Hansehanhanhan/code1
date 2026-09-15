@@ -70,6 +70,7 @@ class Settings:
     degrade_on_error: bool
     app_auth_enabled: bool
     app_api_key: str | None
+    identity_keys_path: str
     max_query_chars: int
     max_context_chars: int
     prompt_injection_guard_enabled: bool
@@ -112,6 +113,7 @@ class Settings:
             degrade_on_error=_to_bool(os.getenv("DEGRADE_ON_ERROR"), default=True),
             app_auth_enabled=_to_bool(os.getenv("APP_AUTH_ENABLED"), default=False),
             app_api_key=os.getenv("APP_API_KEY"),
+            identity_keys_path=os.getenv("IDENTITY_KEYS_PATH", "api_keys.json"),
             max_query_chars=_to_int(os.getenv("MAX_QUERY_CHARS"), default=2000, minimum=1),
             max_context_chars=_to_int(os.getenv("MAX_CONTEXT_CHARS"), default=8000, minimum=1),
             prompt_injection_guard_enabled=_to_bool(os.getenv("PROMPT_INJECTION_GUARD_ENABLED"), default=True),

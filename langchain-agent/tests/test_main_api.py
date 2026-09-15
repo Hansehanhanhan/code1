@@ -42,6 +42,7 @@ def make_settings(**overrides: Any) -> Settings:
         degrade_on_error=True,
         app_auth_enabled=False,
         app_api_key=None,
+        identity_keys_path="api_keys.json",
         max_query_chars=2000,
         max_context_chars=8000,
         prompt_injection_guard_enabled=True,
@@ -178,7 +179,19 @@ def test_run_stream_emits_events(monkeypatch) -> None:
         del query, context, session_id, request_id
         assert event_sink is not None
         event_sink({"type": "agent_action", "content": {"loop_index": 1, "action": "traffic_analyze"}})
-        event_sink({"type": "tool_observation", "content": {"loop_index": 1, "duration_ms": 3}})
+        event_sink({"type": "llm_observation", "content": {"loop_index": 1, "duration_ms": 10}})
+        event_sink(
+            {
+                "type": "tool_observation",
+                "content": {"loop_index": 1, "duration_ms": 3, "observation": {"summary": "x"}},
+            }
+        )
+        event_sink(
+            {
+                "type": "key_step",
+                "content": {"kind": "first_evidence", "action": "traffic_analyze", "evidence_id": "req:tool_0001"},
+            }
+        )
         return make_response("流式完成")
 
     client = build_client(monkeypatch, run_agent_impl=fake_run_agent)
@@ -197,9 +210,12 @@ def test_run_stream_emits_events(monkeypatch) -> None:
 
     event_types = [event.get("type") for event in event_payloads if isinstance(event, dict)]
     assert "agent_action" in event_types
+    assert "llm_observation" in event_types
     assert "tool_observation" in event_types
     assert "final_response" in event_types
     assert "stream_metrics" in event_types
+    key_steps = [event for event in event_payloads if event.get("type") == "key_step"]
+    assert any(content.get("kind") == "first_evidence" for content in [k.get("content") for k in key_steps])
 
     stream_metrics = next(event["content"] for event in event_payloads if event.get("type") == "stream_metrics")
     assert stream_metrics["ttfb_ms"] >= 0
@@ -257,6 +273,66 @@ def test_jobs_events_endpoint(monkeypatch, tmp_path) -> None:
     event_types = [event["type"] for event in body["events"]]
     assert "final_response" in event_types
     assert "stream_metrics" in event_types
+
+
+def test_jobs_stream_sse_is_replayable(monkeypatch, tmp_path) -> None:
+    def fake_run_agent(
+        query: str,
+        context: dict[str, Any],
+        session_id: str | None,
+        event_sink=None,
+        request_id: str | None = None,
+    ) -> RunResponse:
+        del query, context, session_id, request_id
+        assert event_sink is not None
+        event_sink({"type": "agent_action", "content": {"loop_index": 1, "action": "traffic_analyze"}})
+        event_sink(
+            {
+                "type": "tool_observation",
+                "content": {"loop_index": 1, "duration_ms": 3, "observation": {"summary": "x"}},
+            }
+        )
+        return make_response("任务完成")
+
+    client = build_client(
+        monkeypatch,
+        run_agent_impl=fake_run_agent,
+        settings_overrides={"job_db_path": str(tmp_path / "jobs_stream.db")},
+    )
+
+    created = client.post("/jobs", json={"query": "test", "context": {}, "session_id": "s1"})
+    assert created.status_code == 200
+    job_id = created.json()["job_id"]
+
+    for _ in range(30):
+        status_resp = client.get(f"/jobs/{job_id}")
+        assert status_resp.status_code == 200
+        if status_resp.json()["status"] in {"succeeded", "degraded", "failed"}:
+            break
+        time.sleep(0.05)
+
+    assert status_resp.json()["status"] == "succeeded"
+
+    with client.stream("GET", f"/jobs/{job_id}/stream") as response:
+        assert response.status_code == 200
+        body = "".join(response.iter_text())
+
+    event_payloads: list[dict[str, Any]] = []
+    for segment in body.split("data: ")[1:]:
+        raw = segment.split("\n\n", 1)[0].strip()
+        raw = raw.replace("\\n\\n", "").strip()
+        if raw:
+            try:
+                event_payloads.append(json.loads(raw))
+            except json.JSONDecodeError:
+                continue  # 跳过 heartbeat/非 JSON 块
+
+    event_types = [event.get("type") for event in event_payloads if isinstance(event, dict)]
+    assert "agent_action" in event_types
+    assert "tool_observation" in event_types
+    assert "final_response" in event_types
+    assert "stream_metrics" in event_types
+    assert event_types.index("final_response") < event_types.index("stream_metrics")
 
 
 def test_jobs_submit_idempotency_key_reuses_existing_job(monkeypatch, tmp_path) -> None:
@@ -713,3 +789,245 @@ def test_cors_wildcard_disables_credentials() -> None:
     origins, allow_credentials = main._build_cors_config(cfg)
     assert origins == ["*"]
     assert allow_credentials is False
+
+
+IDENTITY_KEYS_FIXTURE = [
+    {"api_key": "key-a", "user_id": "user-a", "tenant_id": "t1", "merchant_ids": ["demo-001"]},
+    {"api_key": "key-b", "user_id": "user-b", "tenant_id": "t2", "merchant_ids": ["demo-002"]},
+]
+
+
+def write_identity_keys(tmp_path) -> str:
+    import json
+
+    path = tmp_path / "api_keys.json"
+    path.write_text(json.dumps({"keys": IDENTITY_KEYS_FIXTURE}), encoding="utf-8")
+    return str(path)
+
+
+def test_run_identity_allowed_merchant_and_binds_session(monkeypatch, tmp_path) -> None:
+    client = build_client(
+        monkeypatch,
+        settings_overrides={
+            "app_auth_enabled": True,
+            "app_api_key": "admin-key",
+            "identity_keys_path": write_identity_keys(tmp_path),
+        },
+    )
+    response = client.post(
+        "/run",
+        json={"query": "test", "context": {"merchant_id": "demo-001"}, "session_id": "s-owner-a"},
+        headers={"x-api-key": "key-a"},
+    )
+    assert response.status_code == 200
+
+    # Same owner reuses the session fine.
+    again = client.post(
+        "/run",
+        json={"query": "test", "context": {"merchant_id": "demo-001"}, "session_id": "s-owner-a"},
+        headers={"x-api-key": "key-a"},
+    )
+    assert again.status_code == 200
+
+
+def test_run_identity_forbidden_merchant(monkeypatch, tmp_path) -> None:
+    client = build_client(
+        monkeypatch,
+        settings_overrides={
+            "app_auth_enabled": True,
+            "app_api_key": "admin-key",
+            "identity_keys_path": write_identity_keys(tmp_path),
+        },
+    )
+    response = client.post(
+        "/run",
+        json={"query": "test", "context": {"merchant_id": "demo-002"}, "session_id": "s1"},
+        headers={"x-api-key": "key-a"},
+    )
+    assert response.status_code == 403
+    assert "no access to merchant_id" in response.json()["detail"]
+
+
+def test_run_identity_invalid_key_rejected(monkeypatch, tmp_path) -> None:
+    client = build_client(
+        monkeypatch,
+        settings_overrides={
+            "app_auth_enabled": True,
+            "app_api_key": "admin-key",
+            "identity_keys_path": write_identity_keys(tmp_path),
+        },
+    )
+    response = client.post(
+        "/run",
+        json={"query": "test", "context": {}, "session_id": "s1"},
+        headers={"x-api-key": "bogus-key"},
+    )
+    assert response.status_code == 401
+
+
+def test_run_identity_without_key_rejected_when_enabled(monkeypatch, tmp_path) -> None:
+    client = build_client(
+        monkeypatch,
+        settings_overrides={
+            "app_auth_enabled": True,
+            "app_api_key": "admin-key",
+            "identity_keys_path": write_identity_keys(tmp_path),
+        },
+    )
+    response = client.post("/run", json={"query": "test", "context": {}, "session_id": "s1"})
+    assert response.status_code == 401
+
+
+def test_run_admin_key_full_access(monkeypatch, tmp_path) -> None:
+    client = build_client(
+        monkeypatch,
+        settings_overrides={
+            "app_auth_enabled": True,
+            "app_api_key": "admin-key",
+            "identity_keys_path": write_identity_keys(tmp_path),
+        },
+    )
+    response = client.post(
+        "/run",
+        json={"query": "test", "context": {"merchant_id": "any-merchant"}, "session_id": "s-admin"},
+        headers={"x-api-key": "admin-key"},
+    )
+    assert response.status_code == 200
+
+
+def test_run_session_owner_rejected_for_other_user(monkeypatch, tmp_path) -> None:
+    client = build_client(
+        monkeypatch,
+        settings_overrides={
+            "app_auth_enabled": True,
+            "app_api_key": "admin-key",
+            "identity_keys_path": write_identity_keys(tmp_path),
+        },
+    )
+    first = client.post(
+        "/run",
+        json={"query": "test", "context": {"merchant_id": "demo-001"}, "session_id": "shared-session"},
+        headers={"x-api-key": "key-a"},
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/run",
+        json={"query": "test", "context": {"merchant_id": "demo-002"}, "session_id": "shared-session"},
+        headers={"x-api-key": "key-b"},
+    )
+    assert second.status_code == 403
+    assert "session_id belongs to another user" in second.json()["detail"]
+
+
+def test_job_ownership_rejects_other_user(monkeypatch, tmp_path) -> None:
+    client = build_client(
+        monkeypatch,
+        settings_overrides={
+            "app_auth_enabled": True,
+            "app_api_key": "admin-key",
+            "identity_keys_path": write_identity_keys(tmp_path),
+            "job_db_path": str(tmp_path / "jobs_owner.db"),
+        },
+    )
+    created = client.post(
+        "/jobs",
+        json={"query": "test", "context": {"merchant_id": "demo-001"}, "session_id": "s-a"},
+        headers={"x-api-key": "key-a"},
+    )
+    assert created.status_code == 200
+    job_id = created.json()["job_id"]
+
+    other = client.get(f"/jobs/{job_id}", headers={"x-api-key": "key-b"})
+    assert other.status_code == 403
+    assert "job belongs to another user" in other.json()["detail"]
+
+    cancel_other = client.post(f"/jobs/{job_id}/cancel", headers={"x-api-key": "key-b"})
+    assert cancel_other.status_code == 403
+
+
+def test_job_ownership_allows_owner(monkeypatch, tmp_path) -> None:
+    client = build_client(
+        monkeypatch,
+        settings_overrides={
+            "app_auth_enabled": True,
+            "app_api_key": "admin-key",
+            "identity_keys_path": write_identity_keys(tmp_path),
+            "job_db_path": str(tmp_path / "jobs_owner_ok.db"),
+        },
+    )
+    created = client.post(
+        "/jobs",
+        json={"query": "test", "context": {"merchant_id": "demo-001"}, "session_id": "s-a"},
+        headers={"x-api-key": "key-a"},
+    )
+    assert created.status_code == 200
+    job_id = created.json()["job_id"]
+
+    owner = client.get(f"/jobs/{job_id}", headers={"x-api-key": "key-a"})
+    assert owner.status_code == 200
+    assert owner.json()["job_id"] == job_id
+
+
+def test_session_state_endpoint_returns_state(monkeypatch, tmp_path) -> None:
+    client = build_client(
+        monkeypatch,
+        settings_overrides={
+            "app_auth_enabled": True,
+            "app_api_key": "admin-key",
+            "identity_keys_path": write_identity_keys(tmp_path),
+        },
+    )
+    created = client.post(
+        "/run",
+        json={"query": "test", "context": {"merchant_id": "demo-001"}, "session_id": "s-read"},
+        headers={"x-api-key": "key-a"},
+    )
+    assert created.status_code == 200
+
+    body = client.get("/sessions/s-read", headers={"x-api-key": "key-a"})
+    assert body.status_code == 200
+    data = body.json()
+    assert data["session_id"] == "s-read"
+    assert isinstance(data["version"], int)
+    assert isinstance(data["context_slots"], dict)
+    assert isinstance(data["verified_findings"], list)
+    assert "current_candidates" in data
+    assert "unresolved_constraints" in data
+
+
+def test_session_state_read_does_not_bind_owner(monkeypatch, tmp_path) -> None:
+    client = build_client(
+        monkeypatch,
+        settings_overrides={
+            "app_auth_enabled": True,
+            "app_api_key": "admin-key",
+            "identity_keys_path": write_identity_keys(tmp_path),
+        },
+    )
+    first = client.get("/sessions/unbound-session", headers={"x-api-key": "key-a"})
+    assert first.status_code == 200
+
+    second = client.get("/sessions/unbound-session", headers={"x-api-key": "key-b"})
+    assert second.status_code == 200
+
+
+def test_session_state_endpoint_rejects_other_user(monkeypatch, tmp_path) -> None:
+    client = build_client(
+        monkeypatch,
+        settings_overrides={
+            "app_auth_enabled": True,
+            "app_api_key": "admin-key",
+            "identity_keys_path": write_identity_keys(tmp_path),
+        },
+    )
+    created = client.post(
+        "/run",
+        json={"query": "test", "context": {"merchant_id": "demo-001"}, "session_id": "s-shared"},
+        headers={"x-api-key": "key-a"},
+    )
+    assert created.status_code == 200
+
+    other = client.get("/sessions/s-shared", headers={"x-api-key": "key-b"})
+    assert other.status_code == 403
+    assert "session_id belongs to another user" in other.json()["detail"]

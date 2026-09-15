@@ -53,6 +53,8 @@ class SqliteJobStore:
                     query TEXT NOT NULL,
                     context_json TEXT NOT NULL,
                     session_id TEXT,
+                    owner_tenant_id TEXT,
+                    owner_user_id TEXT,
                     response_json TEXT,
                     error_message TEXT,
                     created_at REAL NOT NULL,
@@ -77,6 +79,10 @@ class SqliteJobStore:
             }
             if "idempotency_key" not in columns:
                 self._conn.execute("ALTER TABLE jobs ADD COLUMN idempotency_key TEXT")
+            if "owner_tenant_id" not in columns:
+                self._conn.execute("ALTER TABLE jobs ADD COLUMN owner_tenant_id TEXT")
+            if "owner_user_id" not in columns:
+                self._conn.execute("ALTER TABLE jobs ADD COLUMN owner_user_id TEXT")
             self._conn.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_idempotency_key_unique
@@ -106,6 +112,8 @@ class SqliteJobStore:
         query: str,
         context: dict[str, Any],
         session_id: str | None,
+        owner_tenant_id: str | None,
+        owner_user_id: str | None,
         created_at: float,
     ) -> None:
         with self._lock:
@@ -113,8 +121,8 @@ class SqliteJobStore:
             conn.execute(
                 """
                 INSERT INTO jobs (
-                    job_id, request_id, status, idempotency_key, query, context_json, session_id, response_json, error_message, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+                    job_id, request_id, status, idempotency_key, query, context_json, session_id, owner_tenant_id, owner_user_id, response_json, error_message, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
                 """,
                 (
                     job_id,
@@ -124,6 +132,8 @@ class SqliteJobStore:
                     query,
                     json.dumps(context, ensure_ascii=False),
                     session_id,
+                    owner_tenant_id,
+                    owner_user_id,
                     created_at,
                     created_at,
                 ),
@@ -196,6 +206,8 @@ class SqliteJobStore:
             "query": str(row["query"]),
             "context": json.loads(str(row["context_json"] or "{}")),
             "session_id": row["session_id"],
+            "owner_tenant_id": row["owner_tenant_id"],
+            "owner_user_id": row["owner_user_id"],
             "response": json.loads(str(row["response_json"])) if row["response_json"] else None,
             "error_message": row["error_message"],
             "created_at": float(row["created_at"]),
@@ -257,6 +269,8 @@ class SqliteJobStore:
                     "query": str(row["query"]),
                     "context": json.loads(str(row["context_json"] or "{}")),
                     "session_id": row["session_id"],
+                    "owner_tenant_id": row["owner_tenant_id"],
+                    "owner_user_id": row["owner_user_id"],
                     "response": json.loads(str(row["response_json"])) if row["response_json"] else None,
                     "error_message": row["error_message"],
                     "created_at": float(row["created_at"]),
@@ -285,6 +299,8 @@ class SqliteJobStore:
             "query": str(row["query"]),
             "context": json.loads(str(row["context_json"] or "{}")),
             "session_id": row["session_id"],
+            "owner_tenant_id": row["owner_tenant_id"],
+            "owner_user_id": row["owner_user_id"],
             "response": json.loads(str(row["response_json"])) if row["response_json"] else None,
             "error_message": row["error_message"],
             "created_at": float(row["created_at"]),
@@ -319,7 +335,14 @@ class JobQueueRunner:
             self._worker_thread = None
         self._store.close()
 
-    def submit(self, request: RunRequest, *, request_id: str) -> dict[str, Any]:
+    def submit(
+        self,
+        request: RunRequest,
+        *,
+        request_id: str,
+        owner_tenant_id: str | None = None,
+        owner_user_id: str | None = None,
+    ) -> dict[str, Any]:
         idempotency_key = (request.idempotency_key or "").strip() or None
         if idempotency_key:
             existing = self._store.get_job_by_idempotency_key(idempotency_key)
@@ -340,6 +363,8 @@ class JobQueueRunner:
             query=request.query,
             context=request.context,
             session_id=request.session_id,
+            owner_tenant_id=owner_tenant_id,
+            owner_user_id=owner_user_id,
             created_at=created_at,
         )
         self._queue.put(job_id)
@@ -475,7 +500,12 @@ class JobQueueRunner:
             context=dict(job["context"] or {}),
             session_id=(str(job["session_id"]) if job.get("session_id") else None),
         )
-        retried = self.submit(request, request_id=request_id)
+        retried = self.submit(
+            request,
+            request_id=request_id,
+            owner_tenant_id=str(job.get("owner_tenant_id") or "") or None,
+            owner_user_id=str(job.get("owner_user_id") or "") or None,
+        )
         self._store.append_event(
             job_id,
             "retried",

@@ -1,0 +1,17 @@
+{
+  "_comment": "Identity registry for P0 isolation. Copy to api_keys.json and fill in real keys. Do NOT commit api_keys.json.",
+  "keys": [
+    {
+      "api_key": "REPLACE_WITH_USER_A_KEY",
+      "user_id": "user-a",
+      "tenant_id": "t1",
+      "merchant_ids": ["demo-001"]
+    },
+    {
+      "api_key": "REPLACE_WITH_USER_B_KEY",
+      "user_id": "user-b",
+      "tenant_id": "t2",
+      "merchant_ids": []
+    }
+  ]
+}

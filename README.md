@@ -1,33 +1,56 @@
 # AI Agent 商家运营助手项目
 
-本仓库包含两个实现版本：
+一个面向商家的 AI 运营诊断 Agent：用户以自然语言描述经营问题（如"近 7 天流量下滑，请排查"），Agent 通过功能调用（function-calling）自主编排分析工具、收集证据，输出可追溯的诊断结论与优化建议。
 
-- `code1`：原生状态机版（Planner -> Executor -> Verifier）
-- `langchain-agent`：LangChain ReAct 工程版（当前主线）
+核心特点：
+
+- **LangChain function-calling Agent**：模型主动调用分析工具（流量/转化/库存/广告等模拟工具）收集证据后作答，支持 SSE 流式输出执行轨迹。
+- **多轮诊断记忆（AREX 式 LLM 提议 + 服务端仲裁）**：结论沉淀为结构化诊断状态，模型提交增量提议、服务端校验证据后合并，长会话不丢信息、结论可溯源。
+- **异步任务（/jobs）**：长耗时诊断可异步提交、回放事件、取消与重试。
+- **RAG 知识检索**：混合检索 + metadata 过滤，支持行业知识辅助。
+- **工程化治理**：API Key 鉴权与租户隔离、限流、超时重试降级、结构化日志与观测指标。
+
+本仓库为单一主线实现：
+
+- `langchain-agent`：LangChain function-calling 工程版（当前主线，前端统一入口位于 `langchain-agent/frontend`）
 
 ## 项目目录结构
 
 ```text
 E:\CODE
-├── code1/                    # 原生版本 (Native MVP)
-│   ├── agent/                # 核心逻辑：状态机、模型客户端
-│   ├── backend/              # FastAPI 后端实现
-│   ├── frontend/             # Next.js 前端 UI（统一入口）
-│   ├── tools/                # 商家运营模拟工具 (Mock Tools)
-│   └── README.md             # 原生版详细文档
 ├── langchain-agent/          # LangChain 版本 (Framework Optimized)
 │   ├── agent/                # 基于 LangChain 的 Agent 实现
 │   ├── backend/              # FastAPI 后端实现
+│   ├── frontend/             # Next.js 前端 UI（统一入口）
 │   ├── rag/                  # 检索与知识库模块
 │   ├── mcp_server/           # 轻量 MCP Server
 │   ├── tools/                # 工具集
 │   ├── tests/                # 测试
 │   └── README.md             # LangChain 版详细文档
-├── COMPARISON.md             # 两个版本实现技术对比
 └── README.md                 # 本文件（项目主说明文档）
 ```
 
-## 本次更新（2026-04-28）
+## 本次更新（2026-09-15）
+
+### 1) 版本收敛：移除原生 code1，前端统一入口
+- 删除原生状态机版 `code1`（Planner -> Executor -> Verifier）及技术对比文档 `COMPARISON.md`。
+- 唯一前端 UI 迁移至 `langchain-agent/frontend`（保留 git 历史；`node_modules` 随目录一并保留，本地可免重装直接 `npm run dev`）。
+
+### 2) AREX 记忆闭环定稿（LLM 提议 + 服务端仲裁）
+- Agent 全文切换为 function-calling tool-calling（`create_tool_calling_agent`），工具参数结构化 `{query, context}`，`update_context` 以 JSON patch 提交增量提议。
+- 证据引用收敛为纯三字段 `{evidence_id, request_id, observation_hash}`，服务端拒绝 `tool`/`observation_preview`/`tool_call_id` 等冗余字段；`tool_call_id` 由 `evidence_id` 后缀推导。
+- 请求内工具缓存命中分支同样嵌入证据引用（同一 `evidence_id` 语义、序号递增），模型读到的每条 Observation 都携带合法引用。
+- 模拟工具信号改为按商家上下文确定性输出（`_weak_signal`），同一商家不同措辞结果恒定。
+
+### 3) 端到端验证与测试
+- 新增 `scripts/e2e_verify.py`：真实 LLM × 真实 HTTP 端到端验证（默认自动拉起后端子进程），覆盖 `/run_stream` SSE 事件序列、`/sessions` 状态演化、`/run` 同步、`/jobs` 异步与 `/jobs/{id}/stream` 回放，全部断言通过（32/32）。
+- 新增 `scripts/real_multi_round_probe.py`：两轮真实 API 探针，验收模型自主调用 `update_context`、`finding_count >= 1`、`constraint_status` 非空（本轮 `force_stopped=false`）。
+- 测试基线：`131 passed`。
+
+### 4) 可运行性
+- 本机可直接启动前后端联调：后端 `uvicorn backend.main:app`（:8000，端点 `/run_stream`、`/run`、`/jobs`、`/sessions`），前端 `npm run dev`（:3000，Next.js 15）。
+
+## 历史更新（2026-04-28）
 
 ### 1) 异步任务能力增强（Jobs）
 - 新增 `POST /jobs/{job_id}/cancel`，支持排队中任务取消与运行中任务“取消请求”。
@@ -103,34 +126,33 @@ E:\CODE
 优先参考各子项目 README：
 
 - `langchain-agent/README.md`（主线，建议先看）
-- `code1/README.md`（原生版本）
 
 常用启动方式（主线）：
 
 ```powershell
 cd E:\code
-.\.venv\Scripts\python.exe -m pip install -r .\langchain-agent\requirements.txt
+.\langchain-agent\.venv\Scripts\python.exe -m pip install -r .\langchain-agent\requirements.txt
 
 cd E:\code\langchain-agent
 $env:PYTHONPATH='.'
-& "..\.venv\Scripts\python.exe" -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
+& ".\.venv\Scripts\python.exe" -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 前端（可选）：
 
 ```powershell
-cd E:\code\code1\frontend
+cd E:\code\langchain-agent\frontend
 npm install
 npm run dev
 ```
 
+默认访问 `http://127.0.0.1:3000`（前端默认指向 `http://127.0.0.1:8000`）。本机测试建议保持 Redis 可用（`SESSION_BACKEND=redis` 时状态跨请求闭环）。
+
 ## 下一步计划
-可观测性完善（分阶段指标、错误聚合、报表）
-持久化改造（Redis 持久化 + 运行记录落库）
-队列化与异步任务化
-多实例/分布式部署
+- 前端消费 `key_step` 事件（`first_evidence`/`context_update`/`direction_repair`）做执行步骤可视化突出与证据展示
+- Agent 自省外环：verify/restart（对置信不足的结论触发生成-验证-修订）
+- 命名清理：`ReActTraceCallbackHandler`、`loop_count` 等 ReAct 残留统一为 tool-calling 语义
 
 ## 说明
 
 - 该仓库用于 AI Agent 工程化实践。
-- 如需查看版本差异，请阅读 `COMPARISON.md`。
