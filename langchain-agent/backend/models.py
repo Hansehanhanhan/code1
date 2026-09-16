@@ -46,7 +46,7 @@ class Metrics(BaseModel):
     # 分阶段指标（便于做性能归因）。
     llm_latency_ms: int = Field(default=0, ge=0)
     tool_latency_ms: int = Field(default=0, ge=0)
-    loop_count: int = Field(default=0, ge=0)
+    tool_loop_count: int = Field(default=0, ge=0)
     retrieve_hits: int = Field(default=0, ge=0)
     # 流式场景指标：首包延迟、事件数、完整性。
     ttfb_ms: int | None = Field(default=None, ge=0)

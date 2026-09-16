@@ -281,7 +281,7 @@ sequenceDiagram
 
 ## 10. 可观测性设计
 1. 结构化日志（JSON）统一字段：`request_id/session_id/endpoint/status/latency/error_type`。
-2. 分阶段指标：`llm_latency_ms/tool_latency_ms/loop_count/retrieve_hits`。
+2. 分阶段指标：`llm_latency_ms/tool_latency_ms/tool_loop_count/retrieve_hits`。
 3. 流式特有指标：`ttfb_ms/event_count/event_completeness`。
 4. 关键步事件：`key_step`（`first_evidence` / `context_update` / `direction_repair`）。
 5. 统计接口：`/metrics/error_types`、`/metrics/stability`。
@@ -306,7 +306,7 @@ sequenceDiagram
 ## 13. 已知限制
 1. 模拟工具为确定性注入的数据，未接入真实商家数据源。
 2. 会话短期记忆为窗口策略，长期记忆仅保留结构化诊断状态，未做摘要持久化。
-3. 初审 `verify/restart` 外环（对置信不足结论触发生成-验证-修订）尚未落地；ReAct 命名残留（`ReActTraceCallbackHandler` 等）待清理。
+3. 初审 `verify/restart` 外环（对置信不足结论触发生成-验证-修订）尚未落地。
 
 ## 14. 演进路线（建议）
 1. ~~队列化与异步任务执行~~（已落地 `/jobs`）。

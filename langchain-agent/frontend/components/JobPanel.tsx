@@ -7,7 +7,7 @@ import { ValueView } from "@/components/shared/ValueView";
 const METRIC_PRIORITY_KEYS = [
   "latency_ms",
   "ttfb_ms",
-  "loop_count",
+  "tool_loop_count",
   "llm_latency_ms",
   "tool_latency_ms",
   "retrieve_hits",
@@ -19,9 +19,9 @@ const METRIC_PRIORITY_KEYS = [
 function eventSummary(evt: StreamEvent) {
   switch (evt.type) {
     case "agent_action":
-      return `工具调用 第 ${evt.content.loop_index} 轮`;
+      return `工具调用 第 ${evt.content.tool_loop_index} 轮`;
     case "tool_observation":
-      return `观察 第 ${evt.content.loop_index} 轮`;
+      return `观察 第 ${evt.content.tool_loop_index} 轮`;
     case "llm_observation":
       return `LLM 思考 ${evt.content.duration_ms} 毫秒`;
     case "key_step":

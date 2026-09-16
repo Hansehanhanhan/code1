@@ -107,7 +107,7 @@ def build_client(
     ) -> RunResponse:
         del query, context, session_id, request_id
         if event_sink is not None:
-            event_sink({"type": "agent_action", "content": {"loop_index": 1}})
+            event_sink({"type": "agent_action", "content": {"tool_loop_index": 1}})
         return make_response("done")
 
     monkeypatch.setattr(main, "run_agent", run_agent_impl or _default_run_agent)
@@ -178,12 +178,12 @@ def test_run_stream_emits_events(monkeypatch) -> None:
     ) -> RunResponse:
         del query, context, session_id, request_id
         assert event_sink is not None
-        event_sink({"type": "agent_action", "content": {"loop_index": 1, "action": "traffic_analyze"}})
-        event_sink({"type": "llm_observation", "content": {"loop_index": 1, "duration_ms": 10}})
+        event_sink({"type": "agent_action", "content": {"tool_loop_index": 1, "action": "traffic_analyze"}})
+        event_sink({"type": "llm_observation", "content": {"tool_loop_index": 1, "duration_ms": 10}})
         event_sink(
             {
                 "type": "tool_observation",
-                "content": {"loop_index": 1, "duration_ms": 3, "observation": {"summary": "x"}},
+                "content": {"tool_loop_index": 1, "duration_ms": 3, "observation": {"summary": "x"}},
             }
         )
         event_sink(
@@ -345,11 +345,11 @@ def test_jobs_stream_sse_is_replayable(monkeypatch, tmp_path) -> None:
     ) -> RunResponse:
         del query, context, session_id, request_id
         assert event_sink is not None
-        event_sink({"type": "agent_action", "content": {"loop_index": 1, "action": "traffic_analyze"}})
+        event_sink({"type": "agent_action", "content": {"tool_loop_index": 1, "action": "traffic_analyze"}})
         event_sink(
             {
                 "type": "tool_observation",
-                "content": {"loop_index": 1, "duration_ms": 3, "observation": {"summary": "x"}},
+                "content": {"tool_loop_index": 1, "duration_ms": 3, "observation": {"summary": "x"}},
             }
         )
         return make_response("任务完成")
@@ -439,7 +439,7 @@ def test_jobs_cancel_request(monkeypatch, tmp_path) -> None:
     ) -> RunResponse:
         del query, context, session_id, request_id
         if event_sink is not None:
-            event_sink({"type": "agent_action", "content": {"loop_index": 1}})
+            event_sink({"type": "agent_action", "content": {"tool_loop_index": 1}})
         time.sleep(0.2)
         return make_response("slow done")
 

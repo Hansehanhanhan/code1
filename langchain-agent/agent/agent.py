@@ -33,7 +33,7 @@ from tools.tools import ads_analyze, inventory_check, product_diagnose, traffic_
 # 会话相关运行参数（当前实现为进程内短期记忆）。
 DEFAULT_SESSION_ID = "default"
 MAX_HISTORY_TURNS = 8
-# ReAct 执行安全阈值，避免无限循环或超长占用。
+# Agent 执行安全阈值，避免无限循环或超长占用。
 MAX_AGENT_ITERATIONS = 12
 MAX_AGENT_EXECUTION_SECONDS = 90
 ROUTED_AGENT_ITERATIONS = 12
@@ -57,58 +57,6 @@ TOOL_KEYWORDS: dict[str, tuple[str, ...]] = {
 
 BROAD_QUERY_KEYWORDS = ("综合", "整体", "全面", "排查", "诊断", "分析全部", "全链路", "all", "overall")
 REQUIRED_CONTEXT_KEYS = ("merchant_id", "time_range")
-
-REACT_TEMPLATE = """You are an ecommerce operations analyst assistant.
-You must call tools to gather evidence before concluding.
-Do not fabricate any Observation.
-Persist conclusions via update_context, not only into the Final Answer: the server arbitrates and merges them into the session diagnostic state.
-Call update_context with an incremental JSON patch when:
-1. You complete a diagnostic sub-step (e.g. one tool just returned a conclusion).
-2. You detect conflicting evidence between tools.
-3. You reject or rule out a candidate direction.
-4. Before writing the final answer (submit at least once per request).
-Only reference evidence_id and observation_hash values copied verbatim from the current request's tool Observations. Never invent them.
-Do not delete historical findings; use supersede_findings when newer evidence replaces one.
-Example (evidence fields are illustrative only - copy them from the real Observation):
-Action: update_context
-Action Input: {{"reason":"traffic_analysis_completed","context_slots":{{"merchant_id":"demo-001"}},"add_findings":[{{"id":"f-1","claim":"近7天流量下滑22%","confidence":"high","evidence":{{"evidence_id":"req_0001:tool_0003","request_id":"req_0001","observation_hash":"sha256:9f86d0..."}}}}],"add_candidates":["广告投放效率下降"],"reject_candidates":["平台流量规则变更（证据不足）"]}}
-{knowledge_hint}
-Thought and Final Answer must be in Chinese.
-Output plain text only, do not use Markdown bold markers (**).
-Final Answer should include:
-Problem Summary:
-Root Causes:
-1. ...
-2. ...
-3. ...
-Action Plan:
-1. ...
-2. ...
-3. ...
-Risks and Follow-up:
-...
-
-Available tools:
-{tools}
-
-Chat history (may be empty):
-{chat_history}
-
-Use this exact ReAct format:
-Question: user question
-Thought: your reasoning in Chinese
-Action: one of [{tool_names}]
-Action Input: a JSON string, e.g. {{"query":"traffic dropped this week","context":{{"merchant_id":"demo-001"}}}}
-Observation: tool output
-... (repeat Thought/Action/Action Input/Observation as needed)
-Thought: If evidence is already sufficient, stop tool calls and provide final answer.
-Thought: I now know the final answer
-Final Answer: final response to user in Chinese
-
-Begin!
-
-Question: {input}
-Thought:{agent_scratchpad}"""
 
 TOOL_CALLING_SYSTEM_PROMPT = """You are an ecommerce operations analyst assistant.
 {knowledge_hint}
@@ -182,7 +130,7 @@ def _preview(value: Any, max_len: int = 200) -> str:
 
 
 def _extract_thought(action_log: str) -> str:
-    # 从 ReAct 日志中提取 Thought 文本，便于前端可视化展示。
+    # 从工具调用轨迹中提取 Thought 文本，便于前端可视化展示。
     match = re.search(r"Thought:\s*(.*?)(?:\nAction:|\Z)", action_log, flags=re.DOTALL)
     if not match:
         return ""
@@ -228,8 +176,8 @@ def _build_evidence_record(
     }
 
 
-class ReActTraceCallbackHandler(BaseCallbackHandler):
-    """Collect ReAct loop traces and convert them to StepRecord."""
+class ToolCallTraceCallbackHandler(BaseCallbackHandler):
+    """Collect tool-calling loop traces and convert them to StepRecord."""
 
     def __init__(
         self,
@@ -239,7 +187,7 @@ class ReActTraceCallbackHandler(BaseCallbackHandler):
         evidence_counter: dict[str, int] | None = None,
     ) -> None:
         self.steps: list[StepRecord] = []
-        self._loop_index = 0
+        self._tool_loop_index = 0
         self._pending: dict[str, Any] | None = None
         self._event_sink = event_sink
         self._session_id = session_id
@@ -263,13 +211,13 @@ class ReActTraceCallbackHandler(BaseCallbackHandler):
             return
 
     def on_agent_action(self, action: Any, **kwargs: Any) -> Any:
-        # 记录一轮 ReAct 的起点：Thought + Action + Action Input。
-        self._loop_index += 1
+        # 记录一轮工具调用的起点：Thought + Action + Action Input。
+        self._tool_loop_index += 1
         thought = _extract_thought(getattr(action, "log", ""))
         action_name = getattr(action, "tool", "")
         action_input = _normalize_value(getattr(action, "tool_input", ""))
         self._pending = {
-            "loop_index": self._loop_index,
+            "tool_loop_index": self._tool_loop_index,
             "thought": thought,
             "action": action_name,
             "action_input": action_input,
@@ -278,17 +226,17 @@ class ReActTraceCallbackHandler(BaseCallbackHandler):
         self._emit(
             "agent_action",
             {
-                "loop_index": self._loop_index,
+                "tool_loop_index": self._tool_loop_index,
                 "thought": thought,
                 "action": action_name,
                 "action_input": action_input,
             },
         )
         _log_event(
-            "react_agent_action",
+            "agent_action",
             request_id=self._request_id,
             session_id=self._session_id,
-            loop_index=self._loop_index,
+            tool_loop_index=self._tool_loop_index,
             action=action_name,
             thought=_preview(thought, max_len=160),
             action_input=_preview(action_input, max_len=240),
@@ -320,16 +268,16 @@ class ReActTraceCallbackHandler(BaseCallbackHandler):
         self._emit(
             "llm_observation",
             {
-                "loop_index": self._loop_index,
+                "tool_loop_index": self._tool_loop_index,
                 "duration_ms": duration_ms,
                 "llm_latency_ms": self.total_llm_latency_ms,
             },
         )
         _log_event(
-            "react_llm_observation",
+            "llm_observation",
             request_id=self._request_id,
             session_id=self._session_id,
-            loop_index=self._loop_index,
+            tool_loop_index=self._tool_loop_index,
             duration_ms=duration_ms,
             total_llm_latency_ms=self.total_llm_latency_ms,
         )
@@ -337,9 +285,9 @@ class ReActTraceCallbackHandler(BaseCallbackHandler):
     def on_tool_end(self, output: Any, **kwargs: Any) -> Any:
         # 在工具执行结束时补全 Observation 与耗时。
         if self._pending is None:
-            self._loop_index += 1
+            self._tool_loop_index += 1
             self._pending = {
-                "loop_index": self._loop_index,
+                "tool_loop_index": self._tool_loop_index,
                 "thought": "",
                 "action": "",
                 "action_input": {},
@@ -406,7 +354,7 @@ class ReActTraceCallbackHandler(BaseCallbackHandler):
             )
         self.steps.append(
             StepRecord(
-                name=f"ReAct Loop {self._pending['loop_index']}",
+                name=f"Tool Loop {self._pending['tool_loop_index']}",
                 input={
                     "thought": self._pending["thought"],
                     "action": self._pending["action"],
@@ -419,7 +367,7 @@ class ReActTraceCallbackHandler(BaseCallbackHandler):
         self._emit(
             "tool_observation",
             {
-                "loop_index": self._pending["loop_index"],
+                "tool_loop_index": self._pending["tool_loop_index"],
                 "observation": observation,
                 "evidence": evidence,
                 "duration_ms": duration_ms,
@@ -428,10 +376,10 @@ class ReActTraceCallbackHandler(BaseCallbackHandler):
             },
         )
         _log_event(
-            "react_tool_observation",
+            "tool_observation",
             request_id=self._request_id,
             session_id=self._session_id,
-            loop_index=self._pending["loop_index"],
+            tool_loop_index=self._pending["tool_loop_index"],
             action=self._pending["action"],
             duration_ms=duration_ms,
             total_tool_latency_ms=self.total_tool_latency_ms,
@@ -451,7 +399,7 @@ class ReActTraceCallbackHandler(BaseCallbackHandler):
         error_message = str(error)
         self.steps.append(
             StepRecord(
-                name=f"ReAct Loop {self._pending['loop_index']}",
+                name=f"Tool Loop {self._pending['tool_loop_index']}",
                 input={
                     "thought": self._pending["thought"],
                     "action": self._pending["action"],
@@ -464,7 +412,7 @@ class ReActTraceCallbackHandler(BaseCallbackHandler):
         self._emit(
             "tool_observation",
             {
-                "loop_index": self._pending["loop_index"],
+                "tool_loop_index": self._pending["tool_loop_index"],
                 "observation": {"error": error_message},
                 "duration_ms": duration_ms,
                 "tool_latency_ms": self.total_tool_latency_ms,
@@ -472,10 +420,10 @@ class ReActTraceCallbackHandler(BaseCallbackHandler):
             },
         )
         _log_event(
-            "react_tool_error",
+            "tool_error",
             request_id=self._request_id,
             session_id=self._session_id,
-            loop_index=self._pending["loop_index"],
+            tool_loop_index=self._pending["tool_loop_index"],
             action=self._pending["action"],
             duration_ms=duration_ms,
             total_tool_latency_ms=self.total_tool_latency_ms,
@@ -500,7 +448,7 @@ def _normalize_session_id(session_id: str | None) -> str:
 
 
 def _get_history_text(session_store: SessionStore, session_id: str) -> str:
-    # 将当前状态和历史对话拼成纯文本，注入到当前 ReAct 提示中。
+    # 将当前状态和历史对话拼成纯文本，注入到当前 Agent 提示中。
     state = session_store.get_state(session_id)
     turns = session_store.get_history(session_id)
     lines: list[str] = [
@@ -637,7 +585,7 @@ def _build_clarification_response(
             fallback_used=False,
             llm_latency_ms=0,
             tool_latency_ms=0,
-            loop_count=0,
+            tool_loop_count=0,
             retrieve_hits=0,
         ),
     )
@@ -969,7 +917,7 @@ def _run_refine_pass(
     return refined
 
 
-def _build_react_tool(
+def _build_tool(
     name: str,
     description: str,
     tool_fn: ToolFn,
@@ -1155,7 +1103,7 @@ def _build_tools(
     tools: list[StructuredTool] = []
     if "traffic_analyze" in selected:
         tools.append(
-            _build_react_tool(
+            _build_tool(
                 name="traffic_analyze",
                 description="Analyze traffic trend. Args: query (investigation question, str), context (optional dict with merchant_id/time_range).",
                 tool_fn=traffic_analyze,
@@ -1166,7 +1114,7 @@ def _build_tools(
         )
     if "ads_analyze" in selected:
         tools.append(
-            _build_react_tool(
+            _build_tool(
                 name="ads_analyze",
                 description="Analyze ad efficiency and ROI. Args: query (investigation question, str), context (optional dict with merchant_id/time_range).",
                 tool_fn=ads_analyze,
@@ -1177,7 +1125,7 @@ def _build_tools(
         )
     if "inventory_check" in selected:
         tools.append(
-            _build_react_tool(
+            _build_tool(
                 name="inventory_check",
                 description="Check inventory risk. Args: query (investigation question, str), context (optional dict with merchant_id/time_range).",
                 tool_fn=inventory_check,
@@ -1188,7 +1136,7 @@ def _build_tools(
         )
     if "product_diagnose" in selected:
         tools.append(
-            _build_react_tool(
+            _build_tool(
                 name="product_diagnose",
                 description="Diagnose product conversion. Args: query (investigation question, str), context (optional dict with merchant_id/time_range).",
                 tool_fn=product_diagnose,
@@ -1201,7 +1149,7 @@ def _build_tools(
     if settings.rag_enabled and "retrieve_knowledge" in selected:
         # 开启 RAG 时，允许 Agent 主动检索 SOP/策略知识片段。
         tools.append(
-            _build_react_tool(
+            _build_tool(
                 name="retrieve_knowledge",
                 description=(
                     "Retrieve SOP and policy snippets from local knowledge base. "
@@ -1319,7 +1267,7 @@ def run_agent(
     event_sink: EventSink | None = None,
     request_id: str | None = None,
 ) -> RunResponse:
-    """Run ReAct agent and return structured response."""
+    """Run tool-calling agent and return structured response."""
 
     settings = Settings.from_env()
     session_store = get_session_store(settings)
@@ -1338,7 +1286,7 @@ def run_agent(
             missing_context_keys=missing_keys,
         )
         return response
-    trace_callback = ReActTraceCallbackHandler(
+    trace_callback = ToolCallTraceCallbackHandler(
         event_sink=event_sink,
         session_id=sid,
         request_id=execution_request_id,
@@ -1429,7 +1377,7 @@ def run_agent(
                 fallback_used=False,
                 llm_latency_ms=0,
                 tool_latency_ms=tool_duration_ms,
-                loop_count=1,
+                tool_loop_count=1,
                 retrieve_hits=len(tool_output.get("data", {}).get("matches", []))
                 if isinstance(tool_output, dict)
                 else 0,
@@ -1488,7 +1436,7 @@ def run_agent(
             state_version=session_store.get_state(sid).version,
         )
 
-    # steps = ReAct 每轮轨迹 + 一条总览 Agent 结果。
+    # steps = 工具调用每轮轨迹 + 一条总览 Agent 结果。
     steps: list[StepRecord] = trace_callback.steps + [
         StepRecord(
             name="Agent",
@@ -1506,7 +1454,7 @@ def run_agent(
         step_count=len(trace_callback.steps),
         llm_latency_ms=trace_callback.total_llm_latency_ms,
         tool_latency_ms=trace_callback.total_tool_latency_ms,
-        loop_count=len(trace_callback.steps),
+        tool_loop_count=len(trace_callback.steps),
         retrieve_hits=trace_callback.retrieve_hits,
         selected_tools=selected_tool_names,
         route_reason=route_reason,
@@ -1521,7 +1469,7 @@ def run_agent(
             fallback_used=False,
             llm_latency_ms=trace_callback.total_llm_latency_ms,
             tool_latency_ms=trace_callback.total_tool_latency_ms,
-            loop_count=len(trace_callback.steps),
+            tool_loop_count=len(trace_callback.steps),
             retrieve_hits=trace_callback.retrieve_hits,
         ),
     )

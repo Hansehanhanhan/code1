@@ -23,7 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--round1-query",
         default="请分析最近流量下滑的全面原因和行动方案",
-        help="Round 1 user query (full ReAct agent, narrow tool set so round 2 adds new evidence).",
+        help="Round 1 user query (full tool-calling agent, narrow tool set so round 2 adds new evidence).",
     )
     parser.add_argument(
         "--round2-query",

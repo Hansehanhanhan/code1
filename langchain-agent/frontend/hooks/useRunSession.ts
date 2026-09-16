@@ -26,7 +26,7 @@ export function useRunSession() {
     (evt: StreamEvent) => {
       switch (evt.type) {
         case "agent_action":
-          stepsRef.current = upsertLoopStep(stepsRef.current, evt.content.loop_index, {
+          stepsRef.current = upsertLoopStep(stepsRef.current, evt.content.tool_loop_index, {
             input: {
               thought: evt.content.thought,
               action: evt.content.action,
@@ -36,14 +36,14 @@ export function useRunSession() {
           setLive(stepsRef.current);
           break;
         case "llm_observation":
-          stepsRef.current = upsertLoopStep(stepsRef.current, evt.content.loop_index, {
+          stepsRef.current = upsertLoopStep(stepsRef.current, evt.content.tool_loop_index, {
             llm_duration_ms: evt.content.duration_ms,
           });
           setLive(stepsRef.current);
           break;
         case "tool_observation": {
-          const prev = stepsRef.current.find((s) => s.name === `Tool Loop ${evt.content.loop_index}`);
-          stepsRef.current = upsertLoopStep(stepsRef.current, evt.content.loop_index, {
+          const prev = stepsRef.current.find((s) => s.name === `Tool Loop ${evt.content.tool_loop_index}`);
+          stepsRef.current = upsertLoopStep(stepsRef.current, evt.content.tool_loop_index, {
             input: prev?.input,
             output: { observation: evt.content.observation },
             duration_ms: evt.content.duration_ms,

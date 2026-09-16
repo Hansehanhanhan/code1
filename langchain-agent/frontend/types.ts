@@ -62,20 +62,20 @@ export type KeyStepEvent = {
 };
 
 export type AgentActionContent = {
-  loop_index: number;
+  tool_loop_index: number;
   thought: string;
   action: string;
   action_input: unknown;
 };
 
 export type ToolObservationContent = {
-  loop_index: number;
+  tool_loop_index: number;
   observation: unknown;
   duration_ms: number;
 };
 
 export type LlmObservationContent = {
-  loop_index: number;
+  tool_loop_index: number;
   duration_ms: number;
   llm_latency_ms?: number;
 };

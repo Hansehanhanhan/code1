@@ -490,7 +490,7 @@ async def run(request: RunRequest, http_request: Request, http_response: Respons
             extra_fields={
                 "llm_latency_ms": response.metrics.llm_latency_ms,
                 "tool_latency_ms": response.metrics.tool_latency_ms,
-                "loop_count": response.metrics.loop_count,
+                "tool_loop_count": response.metrics.tool_loop_count,
                 "retrieve_hits": response.metrics.retrieve_hits,
                 "attempts_used": attempts_used,
                 "degraded": False,
@@ -621,7 +621,7 @@ async def run_stream(request: RunRequest, http_request: Request) -> StreamingRes
                     "event_completeness": event_completeness,
                     "llm_latency_ms": response.metrics.llm_latency_ms,
                     "tool_latency_ms": response.metrics.tool_latency_ms,
-                    "loop_count": response.metrics.loop_count,
+"tool_loop_count": response.metrics.tool_loop_count,
                     "retrieve_hits": response.metrics.retrieve_hits,
                     "attempts_used": attempts_used,
                     "degraded": False,

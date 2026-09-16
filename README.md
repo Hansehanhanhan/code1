@@ -151,7 +151,6 @@ npm run dev
 ## 下一步计划
 - 前端消费 `key_step` 事件（`first_evidence`/`context_update`/`direction_repair`）做执行步骤可视化突出与证据展示
 - Agent 自省外环：verify/restart（对置信不足的结论触发生成-验证-修订）
-- 命名清理：`ReActTraceCallbackHandler`、`loop_count` 等 ReAct 残留统一为 tool-calling 语义
 
 ## 说明
 

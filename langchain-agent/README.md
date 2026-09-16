@@ -311,7 +311,7 @@ $env:PYTHONPATH='.'
 - `error_message`（失败时）
 - `llm_latency_ms`
 - `tool_latency_ms`
-- `loop_count`
+- `tool_loop_count`
 - `retrieve_hits`
 - `ttfb_ms`（`/run_stream`）
 - `event_count`（`/run_stream`）
@@ -329,7 +329,7 @@ $env:PYTHONPATH='.'
 | `latency_ms` | int | 端到端耗时（毫秒） |
 | `llm_latency_ms` | int | LLM 阶段累计耗时（毫秒） |
 | `tool_latency_ms` | int | 工具阶段累计耗时（毫秒） |
-| `loop_count` | int | ReAct 循环轮数 |
+| `tool_loop_count` | int | 工具调用轮数 |
 | `retrieve_hits` | int | RAG 命中片段总数 |
 | `ttfb_ms` | int | 流式首包延迟（仅 `run_stream`） |
 | `event_count` | int | 流式事件总数（仅 `run_stream`） |
@@ -341,7 +341,7 @@ $env:PYTHONPATH='.'
 
 ```json
 {"event":"request_started","endpoint":"run","request_id":"...","session_id":"demo-001","context_keys":["merchant_id"]}
-{"event":"request_finished","endpoint":"run","request_id":"...","session_id":"demo-001","status":"success","latency_ms":1820,"fallback_used":false,"llm_latency_ms":1240,"tool_latency_ms":390,"loop_count":3,"retrieve_hits":2}
+{"event":"request_finished","endpoint":"run","request_id":"...","session_id":"demo-001","status":"success","latency_ms":1820,"fallback_used":false,"llm_latency_ms":1240,"tool_latency_ms":390,"tool_loop_count":3,"retrieve_hits":2}
 {"event":"request_finished","endpoint":"run","request_id":"...","session_id":"demo-001","status":"error","latency_ms":731,"error_type":"RuntimeError","error_message":"Agent execution failed: ..."}
 {"event":"request_finished","endpoint":"run_stream","request_id":"...","session_id":"demo-001","status":"success","latency_ms":2143,"ttfb_ms":182,"event_count":6,"event_completeness":true}
 ```
@@ -356,7 +356,7 @@ $env:PYTHONPATH='.'
 同时，`run_agent` 返回的 `metrics` 中包含分阶段指标：
 - `llm_latency_ms`
 - `tool_latency_ms`
-- `loop_count`
+- `tool_loop_count`
 - `retrieve_hits`
 
 ## 错误聚合统计
@@ -380,7 +380,7 @@ $env:PYTHONPATH='.'
 本项目提供轻量 MCP Server（stdio），复用现有 Agent 和 RAG 逻辑。
 
 可用工具：
-- `run_agent`：执行 ReAct Agent
+- `run_agent`：执行 Tool-Calling Agent
 - `retrieve_knowledge`：调用本地 RAG 检索
 - `health`：查看运行状态和关键开关
 

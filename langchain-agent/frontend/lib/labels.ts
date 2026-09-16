@@ -21,7 +21,7 @@ export const FIELD_LABELS: Record<string, string> = {
   event_completeness: "事件完整性",
   llm_latency_ms: "LLM耗时(毫秒)",
   tool_latency_ms: "工具耗时(毫秒)",
-  loop_count: "循环轮数",
+  tool_loop_count: "工具调用轮数",
   retrieve_hits: "检索命中数",
   duration_ms: "耗时(毫秒)",
   thought: "思考",

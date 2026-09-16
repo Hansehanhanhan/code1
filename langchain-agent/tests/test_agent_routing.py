@@ -9,7 +9,7 @@ from agent.agent import (
     _audit_constraint_status,
     _build_evidence_record,
     _build_request_finalize_patch,
-    _build_react_tool,
+    _build_tool,
     _build_update_context_tool,
     _extract_evidence_from_observation,
     _finalize_request_state,
@@ -128,11 +128,11 @@ def test_evidence_record_hash_is_stable_and_request_scoped() -> None:
 
 
 def test_trace_callback_records_evidence_with_tool_observation() -> None:
-    from agent.agent import ReActTraceCallbackHandler
+    from agent.agent import ToolCallTraceCallbackHandler
 
-    callback = ReActTraceCallbackHandler(session_id="s1", request_id="req-1")
+    callback = ToolCallTraceCallbackHandler(session_id="s1", request_id="req-1")
     callback._pending = {
-        "loop_index": 1,
+        "tool_loop_index": 1,
         "thought": "检查流量",
         "action": "traffic_analyze",
         "action_input": {"query": "流量"},
@@ -375,7 +375,7 @@ def _observation_step(tool: str, observation: dict) -> StepRecord:
     import json
 
     return StepRecord(
-        name=f"ReAct Loop {tool}",
+        name=f"Tool Loop {tool}",
         input={"action": tool, "action_input": {}},
         output={"observation": observation},
         duration_ms=5,
@@ -443,7 +443,7 @@ def test_finalize_request_state_noop_without_grounded_observations() -> None:
     assert store.get_state("s1").version == 0
 
 
-def test_react_template_includes_update_context_few_shot() -> None:
+def test_tool_calling_template_includes_update_context_few_shot() -> None:
     assert "Call update_context at least once per request" in TOOL_CALLING_SYSTEM_PROMPT
     assert "submit at least once per request" in TOOL_CALLING_SYSTEM_PROMPT
     assert '"add_findings"' in TOOL_CALLING_SYSTEM_PROMPT
@@ -577,8 +577,8 @@ def test_run_agent_fake_llm_persists_finding_with_injected_evidence(monkeypatch)
     assert 0 <= state.answer_confidence <= 1
 
 
-def test_react_tool_observation_embeds_evidence_block() -> None:
-    tool = _build_react_tool(
+def test_tool_observation_embeds_evidence_block() -> None:
+    tool = _build_tool(
         name="traffic_analyze",
         description="test",
         tool_fn=lambda query, context: {
@@ -600,8 +600,8 @@ def test_react_tool_observation_embeds_evidence_block() -> None:
     assert set(payload["evidence"].keys()) == {"evidence_id", "request_id", "observation_hash"}
 
 
-def test_react_tool_cache_hit_embeds_evidence_block() -> None:
-    tool = _build_react_tool(
+def test_tool_cache_hit_embeds_evidence_block() -> None:
+    tool = _build_tool(
         name="traffic_analyze",
         description="test",
         tool_fn=lambda query, context: {
@@ -647,7 +647,7 @@ def test_finalize_promotes_evidence_backed_findings_then_noops() -> None:
         tool_name="ads_analyze",
     )
     step = StepRecord(
-        name="ReAct Loop 1",
+        name="Tool Loop 1",
         input={"action": "ads_analyze", "action_input": {}},
         output={
             "observation": {"tool": "ads_analyze", "status": "ok", "recommendations": ["优化预算结构"]},

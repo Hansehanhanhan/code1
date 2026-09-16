@@ -174,7 +174,7 @@ ToolHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 TOOLS: dict[str, dict[str, Any]] = {
     "run_agent": {
-        "description": "Run merchant ops ReAct agent and return structured result.",
+        "description": "Run merchant ops tool-calling agent and return structured result.",
         "input_schema": {
             "type": "object",
             "properties": {

@@ -9,7 +9,7 @@
 | # | v1 问题（审查指出） | v2 修正 |
 |---|---|---|
 | 1 | 澄清检查在 run_agent 开头，未读历史，状态帮不上忙 | 澄清流程重排：请求覆盖 → context_slots 补全 → 仍缺才澄清 |
-| 2 | 快速路径绕过 ReAct，不更新状态 | 快速路径做**确定性状态更新**（服务端写，不依赖 LLM） |
+| 2 | 快速路径绕过 Agent 主循环，不更新状态 | 快速路径做**确定性状态更新**（服务端写，不依赖 LLM） |
 | 3 | LLM 提交完整状态，旧事实可能被覆盖丢失 | 改为**增量 patch**：add/remove/reject，服务端合并去重 |
 | 4 | source 只是字符串，可伪造 | 证据绑定 request_id + evidence_id + observation_hash，服务端校验真实执行轨迹 |
 | 5 | 并发请求用旧状态覆盖，丢状态 | version + 乐观锁 CAS（Redis WATCH/Lua，内存全事务锁） |
@@ -23,7 +23,7 @@ P1 / P2 / P3 三个阶段均已实现，与 v2 设计一致；当前测试基线
 
 | 设计点 | v2 原述 | 实现核对 |
 |---|---|---|
-| Agent 引擎 | 文本 ReAct 可执行工具 | 已切换 `create_tool_calling_agent`（function-calling）；`ReActTraceCallbackHandler` 保留为轨迹回调实现（命名待清理，不影响行为） |
+| Agent 引擎 | Tool-Calling 可执行工具 | 已切换 `create_tool_calling_agent`（function-calling）；`ToolCallTraceCallbackHandler` 作为轨迹回调实现 |
 | patch 载体 | `update_context` 工具 | 工具参数为结构化 `{query, context}`，`update_context` 以 JSON 字符串提交增量 patch，服务端解析校验并 CAS 合并 |
 | 证据引用字段 | `evidence_id` / `observation_hash` 等 | 收敛为**纯三字段** `{evidence_id, request_id, observation_hash}`；`tool` / `observation_preview` / `tool_call_id` 不被接受；`tool_call_id` 由 `evidence_id` 后缀推导 |
 | 请求内缓存命中 | 未提及 | 缓存命中分支同样嵌入证据引用（同一 `evidence_id` 语义、序号递增），保证模型读到的每条 Observation 都携带合法引用 |
@@ -171,7 +171,7 @@ P1 / P2 / P3 三个阶段均已实现，与 v2 设计一致；当前测试基线
 ```
 
 - `observation_hash = sha256(json.dumps(observation, sort_keys=True))`
-- `evidence_id` 和 `tool_call_id` 由服务端生成，`loop_index` 只用于前端展示，不作为证据主键
+- `evidence_id` 和 `tool_call_id` 由服务端生成，`tool_loop_index` 只用于前端展示，不作为证据主键
 - 证据表是**本次请求的轨迹**，请求结束后再清理或归档；状态更新重试完成前不能提前删除
 - `evidence_record` 只证明工具真实执行过，不等于已验证诊断结论
 
@@ -324,7 +324,7 @@ h_eff = DiagnosticState(z) ⊕ recent_raw_turns(last 4)
 
 ## 10. 快速路径处理（审查第 2 点）
 
-现状：单工具问题走 `_should_short_circuit()` 直接返回（agent.py:730），绕过 ReAct，不会更新状态。
+现状：单工具问题走 `_should_short_circuit()` 直接返回（agent.py:730），绕过 Agent 主循环，不会更新状态。
 
 ### 方案：快速路径也做确定性状态更新
 
@@ -376,7 +376,7 @@ h_eff = DiagnosticState(z) ⊕ recent_raw_turns(last 4)
 
 改动：
 1. 六字段完整状态 + patch schema + 合并/去重/限长/淘汰
-2. 证据表 + observation_hash 校验（复用 ReActTraceCallbackHandler）
+2. 证据表 + observation_hash 校验（复用 ToolCallTraceCallbackHandler）
 3. version + CAS 并发（Redis Lua / 内存全事务锁）
 4. update_context 工具注册（接受 patch，返回合并结果）
 5. 快速路径确定性更新（evidence + slots，不自动生成 findings）

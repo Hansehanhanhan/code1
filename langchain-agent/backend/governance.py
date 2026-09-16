@@ -86,7 +86,7 @@ def build_degraded_response(
             fallback_used=True,
             llm_latency_ms=0,
             tool_latency_ms=0,
-            loop_count=0,
+            tool_loop_count=0,
             retrieve_hits=0,
         ),
     )

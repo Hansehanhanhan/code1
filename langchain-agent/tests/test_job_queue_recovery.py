@@ -137,7 +137,7 @@ def test_runner_recovers_incomplete_jobs_on_start(monkeypatch, tmp_path) -> None
     ) -> RunResponse:
         del context, session_id, request_id
         if event_sink is not None:
-            event_sink({"type": "agent_action", "content": {"loop_index": 1, "action": "traffic_analyze"}})
+            event_sink({"type": "agent_action", "content": {"tool_loop_index": 1, "action": "traffic_analyze"}})
         return make_response(f"done:{query}")
 
     import backend.job_queue as job_queue
