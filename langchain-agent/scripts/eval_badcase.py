@@ -32,12 +32,18 @@ def parse_args() -> argparse.Namespace:
         help="Whether to require expected text matched in final answer. true/false.",
     )
     parser.add_argument("--require-status", type=int, default=200, help="Expected status code for pass.")
+    parser.add_argument(
+        "--forbid-degraded",
+        default="true",
+        help="Fail when any row hit the degraded/fallback path. true/false.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     require_expected = parse_bool(args.require_expected)
+    forbid_degraded = parse_bool(args.forbid_degraded)
     input_path = Path(args.input).expanduser().resolve()
     if not input_path.exists():
         print(f"[ERROR] Input file does not exist: {input_path}")
@@ -56,6 +62,7 @@ def main() -> int:
     passed_rows: list[dict] = []
     failed_rows: list[dict] = []
     latencies: list[int] = []
+    degraded_rows: list[dict] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -64,9 +71,19 @@ def main() -> int:
         expected = str(row.get("expected", ""))
         final_answer = str(row.get("final_answer", row.get("final_answer_preview", "")))
         expected_matched = bool(expected) and (expected in final_answer)
+        metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+        was_degraded = bool(metrics.get("fallback_used") or metrics.get("degraded"))
+        if was_degraded:
+            degraded_rows.append(
+                {
+                    "case_id": row.get("case_id"),
+                    "status_code": status_code,
+                    "error": row.get("error"),
+                }
+            )
         pass_status = status_code == args.require_status
         pass_expected = (not require_expected) or expected_matched
-        row_passed = pass_status and pass_expected
+        row_passed = pass_status and pass_expected and not was_degraded
         latencies.append(latency_ms)
         if row_passed:
             passed_rows.append(row)
@@ -91,10 +108,12 @@ def main() -> int:
         "failed": total - passed,
         "pass_rate": round(pass_rate, 4),
         "avg_latency_ms": avg_latency,
+        "degraded_rows": len(degraded_rows),
         "min_pass_rate": args.min_pass_rate,
         "max_avg_latency_ms": args.max_avg_latency_ms,
         "require_expected": require_expected,
         "require_status": args.require_status,
+        "forbid_degraded": forbid_degraded,
     }
 
     print(json.dumps({"summary": summary, "failed_cases": failed_rows}, ensure_ascii=False, indent=2))
@@ -104,6 +123,9 @@ def main() -> int:
         return 1
     if avg_latency > args.max_avg_latency_ms:
         print("[FAIL] avg_latency_ms above threshold.")
+        return 1
+    if forbid_degraded and degraded_rows:
+        print(f"[FAIL] {len(degraded_rows)} rows hit degraded/fallback path (forbid_degraded=true).")
         return 1
 
     print("[PASS] bad case evaluation passed.")

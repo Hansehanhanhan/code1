@@ -91,9 +91,13 @@ def main() -> int:
 
     rows: list[dict] = []
     for case in CASES:
+        context = {"merchant_id": "demo-001", "category": "retail", "time_range": "last_7_days"}
+        if case.case_id == "BC-07":
+            # BC-07 专门验证 merchant_id 缺失时的处理
+            context.pop("merchant_id", None)
         payload = {
             "query": case.query,
-            "context": {"merchant_id": "demo-001", "category": "retail"},
+            "context": context,
             "session_id": f"badcase-{case.case_id}",
         }
         started = time.perf_counter()

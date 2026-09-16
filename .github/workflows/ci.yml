@@ -7,6 +7,35 @@ on:
     branches: ["**"]
 
 jobs:
+  frontend-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: langchain-agent/frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: langchain-agent/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm run test
+
   test-and-regression:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -33,16 +62,22 @@ jobs:
         run: |
           python -m pytest -q
 
+      - name: Start fake LLM stub
+        working-directory: langchain-agent
+        run: |
+          nohup python scripts/fake_llm_server.py --host 127.0.0.1 --port 18080 > ../fake_llm.log 2>&1 &
+          echo $! > ../fake_llm.pid
+
       - name: Start backend for regression
         working-directory: langchain-agent
         env:
           PYTHONPATH: .
           OPENAI_API_KEY: ci-dummy-key
-          OPENAI_BASE_URL: http://127.0.0.1:9
-          OPENAI_MODEL: ci-dummy-model
+          OPENAI_BASE_URL: http://127.0.0.1:18080/v1
+          OPENAI_MODEL: fake-stub
           RUN_RETRY_ATTEMPTS: "0"
-          REQUEST_TIMEOUT_SECONDS: "8"
-          REQUEST_TIMEOUT_SECONDS_STREAM: "8"
+          REQUEST_TIMEOUT_SECONDS: "60"
+          REQUEST_TIMEOUT_SECONDS_STREAM: "60"
           DEGRADE_ON_ERROR: "true"
           DEGRADE_ON_TIMEOUT: "true"
           APP_AUTH_ENABLED: "false"
@@ -57,7 +92,7 @@ jobs:
             --base-url http://127.0.0.1:8000 \
             --output docs/bad_case_results.json \
             --ready-timeout 60 \
-            --request-timeout 15
+            --request-timeout 60
 
       - name: Evaluate bad case regression gate
         working-directory: langchain-agent
@@ -67,7 +102,8 @@ jobs:
             --min-pass-rate 0.90 \
             --max-avg-latency-ms 30000 \
             --require-status 200 \
-            --require-expected false
+            --require-expected false \
+            --forbid-degraded true
 
       - name: Upload regression artifacts
         if: always()
@@ -77,10 +113,14 @@ jobs:
           path: |
             langchain-agent/docs/bad_case_results.json
             backend_ci.log
+            fake_llm.log
 
-      - name: Stop backend
+      - name: Stop services
         if: always()
         run: |
           if [ -f backend_ci.pid ]; then
             kill $(cat backend_ci.pid) || true
+          fi
+          if [ -f fake_llm.pid ]; then
+            kill $(cat fake_llm.pid) || true
           fi
