@@ -77,6 +77,7 @@ class Settings:
     app_cors_origins: list[str]
     app_cors_allow_credentials: bool
     agent_verbose: bool
+    outer_loop_enabled: bool = True
     job_db_path: str = ".run/jobs.db"
 
     @classmethod
@@ -123,5 +124,6 @@ class Settings:
             ),
             app_cors_allow_credentials=_to_bool(os.getenv("APP_CORS_ALLOW_CREDENTIALS"), default=False),
             agent_verbose=_to_bool(os.getenv("AGENT_VERBOSE"), default=False),
+            outer_loop_enabled=_to_bool(os.getenv("OUTER_LOOP_ENABLED"), default=True),
             job_db_path=os.getenv("JOB_DB_PATH", ".run/jobs.db"),
         )

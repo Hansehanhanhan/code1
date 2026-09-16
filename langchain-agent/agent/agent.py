@@ -18,11 +18,13 @@ from langchain_openai import ChatOpenAI
 from backend.models import Metrics, RunResponse, StepRecord
 from backend.diagnostic_state import (
     DiagnosticPatch,
+    DiagnosticState,
     EvidenceRef,
     EvidenceRecord,
     EvidenceValidationError,
     FindingProposal,
     StateConflictError,
+    SupersedeProposal,
     validate_patch_evidence,
 )
 from backend.session_store import SessionStore, get_session_store
@@ -39,6 +41,12 @@ MAX_AGENT_EXECUTION_SECONDS = 90
 ROUTED_AGENT_ITERATIONS = 12
 # AREX 外环 refine 预算：单个请求内最多额外执行的定向查证次数。
 MAX_REFINE_ROUNDS = 2
+# Agent 自省外环（verify/restart）：置信度门槛与轮次预算。
+ANSWER_CONFIDENCE_ACCEPT_THRESHOLD = 0.7
+ANSWER_CONFIDENCE_VERIFY_THRESHOLD = 0.4
+MAX_OUTER_ROUNDS = 3
+MAX_RESTART_ROUNDS = 1
+MAX_VERIFY_TARGETS = 2
 
 ANALYSIS_TOOL_NAMES = [
     "traffic_analyze",
@@ -917,6 +925,414 @@ def _run_refine_pass(
     return refined
 
 
+def _audit_confidence(state: DiagnosticState) -> float | None:
+    """确定性置信度：优先按逐约束满足比例，退化为模型自报 answer_confidence。"""
+    if state.constraint_status:
+        total = len(state.constraint_status)
+        satisfied = sum(1 for value in state.constraint_status.values() if value == "satisfied")
+        return round(satisfied / total, 2)
+    if state.answer_confidence is not None:
+        return round(state.answer_confidence, 2)
+    return None
+
+
+def _outer_decision(confidence: float | None) -> str:
+    """置信度三分：accept / verify / restart。置信度缺失按 verify 处理。"""
+    if confidence is None:
+        return "verify"
+    if confidence >= ANSWER_CONFIDENCE_ACCEPT_THRESHOLD:
+        return "accept"
+    if confidence >= ANSWER_CONFIDENCE_VERIFY_THRESHOLD:
+        return "verify"
+    return "restart"
+
+
+def _restart_recoverable(state: DiagnosticState) -> bool:
+    """轨迹可恢复性判定：被拒候选或疑点足够多才值得重启探索。"""
+    return len(state.rejected_candidates) >= 3 or len(state.validity_concerns) >= 2
+
+
+def _emit_outer_decision(
+    event_sink: EventSink | None,
+    *,
+    decision: str,
+    confidence: float | None,
+    reason: str,
+    round_no: int,
+) -> None:
+    # 外环决策对外透出：SSE 事件 + 结构化日志。
+    if event_sink is not None:
+        try:
+            event_sink(
+                {
+                    "type": "outer_decision",
+                    "content": {
+                        "decision": decision,
+                        "confidence": confidence,
+                        "reason": reason,
+                        "round": round_no,
+                    },
+                }
+            )
+        except Exception:
+            return
+    _log_event(
+        "outer_loop_decision",
+        decision=decision,
+        confidence=confidence,
+        reason=reason,
+        round=round_no,
+    )
+
+
+VERIFY_SYSTEM_PROMPT = """You are a verification reviewer for an ecommerce operations analyst agent.
+Review the provisional answer against its evidence and per-constraint status.
+Respond with STRICT JSON only (no Markdown, no extra text):
+{"constraints": {"<constraint_key>": "supported" | "unsupported" | "conflicting"}, "note": "<one-sentence Chinese summary>"}
+Rules:
+- Only use constraint keys that exist in the input.
+- Base verdicts solely on the provided findings, validity concerns and constraint status; never fabricate evidence.
+- "conflicting" means the current evidence is ambiguous or contradictory."""
+
+
+def _run_llm_verify(
+    settings: Settings,
+    session_store: SessionStore,
+    session_id: str,
+    request_id: str,
+    state: DiagnosticState,
+    provisional_answer: str,
+) -> dict[str, Any] | None:
+    """LLM 复核（主路径）：逐约束给出 supported/unsupported/conflicting，服务端仲裁采纳。失败返回 None 走确定性兜底。"""
+    if not settings.openai_api_key:
+        return None
+    payload = {
+        "constraint_status": state.constraint_status,
+        "findings": [
+            {"id": finding.id, "claim": finding.claim, "confidence": finding.confidence}
+            for finding in state.verified_findings
+            if finding.status == "active"
+        ],
+        "validity_concerns": state.validity_concerns,
+        "provisional_answer": provisional_answer,
+    }
+    try:
+        llm = ChatOpenAI(
+            openai_api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
+            model=settings.openai_model,
+            temperature=0,
+            timeout=settings.request_timeout_seconds,
+            max_retries=0,
+        )
+        raw = llm.invoke(
+            VERIFY_SYSTEM_PROMPT
+            + "\n\nInput:\n"
+            + json.dumps(payload, ensure_ascii=False)
+        )
+        text = str(getattr(raw, "content", raw)) or ""
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        verdict = json.loads(text[start : end + 1])
+        patch = DiagnosticPatch(reason="outer_verify", expected_version=state.version)
+        for key, value in verdict.get("constraints", {}).items():
+            if key not in state.constraint_status:
+                continue
+            if value == "supported":
+                patch.update_constraint_status[key] = "satisfied"
+            elif value == "unsupported":
+                patch.update_constraint_status[key] = "unsatisfied"
+            elif value == "conflicting":
+                patch.add_validity_concerns.append(f"{key}: 复核发现证据冲突")
+        note = str(verdict.get("note") or "").strip()[:200]
+        if note:
+            patch.add_validity_concerns.append(note)
+        if patch.update_constraint_status or patch.add_validity_concerns:
+            try:
+                session_store.update_state(
+                    session_id, patch, ttl_seconds=settings.session_ttl_seconds
+                )
+            except StateConflictError:
+                fresh = session_store.get_state(session_id)
+                patch.expected_version = fresh.version
+                session_store.update_state(
+                    session_id, patch, ttl_seconds=settings.session_ttl_seconds
+                )
+        _log_event(
+            "outer_loop_verify_llm",
+            request_id=request_id,
+            session_id=session_id,
+            verdict=verdict,
+        )
+        return verdict
+    except Exception:
+        return None
+
+
+def _run_deterministic_verify(
+    settings: Settings,
+    session_store: SessionStore,
+    session_id: str,
+    request_id: str,
+    query: str,
+    context: dict[str, Any],
+    request_cache: dict[str, dict[str, Any]],
+    evidence_counter: dict[str, int],
+    steps: list[StepRecord],
+    round_no: int,
+) -> bool:
+    """确定性 verify（兜底）：对低置信 active findings 定向交叉验证，一致则提升置信，未获支持则记疑点。"""
+    state = session_store.get_state(session_id)
+    targets = [
+        finding
+        for finding in state.verified_findings
+        if finding.status == "active" and finding.confidence == "low"
+    ][:MAX_VERIFY_TARGETS]
+    acted = False
+    for finding in targets:
+        tool_name = _refine_target_for_constraint(finding.claim)
+        if tool_name is None:
+            continue
+        cache_key = (
+            f"{tool_name}|{finding.claim}|{json.dumps(context, ensure_ascii=False, sort_keys=True)}"
+        )
+        tool_started = perf_counter()
+        if cache_key in request_cache:
+            tool_output = dict(request_cache[cache_key])
+        else:
+            tool_output = _run_single_tool(tool_name, settings, finding.claim, context) or {}
+            request_cache[cache_key] = dict(tool_output)
+        tool_duration_ms = max(0, int((perf_counter() - tool_started) * 1000))
+        evidence_counter["index"] += 1
+        evidence = _build_evidence_record(
+            tool_output,
+            request_id=request_id,
+            tool_call_id=f"tool_{evidence_counter['index']:04d}",
+            tool_name=tool_name,
+        )
+        steps.append(
+            StepRecord(
+                name=f"Verify Loop {round_no}",
+                input={
+                    "thought": f"复核低置信结论 {finding.id}",
+                    "action": tool_name,
+                    "action_input": {"query": finding.claim, "context": context},
+                },
+                output={"observation": tool_output, "evidence": evidence},
+                duration_ms=tool_duration_ms,
+            )
+        )
+        _log_event(
+            "verify_tool_called",
+            request_id=request_id,
+            session_id=session_id,
+            finding_id=finding.id,
+            tool=tool_name,
+            duration_ms=tool_duration_ms,
+            evidence_id=evidence["evidence_id"],
+        )
+        supported = (
+            isinstance(tool_output, dict)
+            and tool_output.get("status") in (None, "ok")
+            and bool(tool_output.get("summary"))
+        )
+        state = session_store.get_state(session_id)
+        patch = DiagnosticPatch(
+            reason="verify_cross_check",
+            expected_version=state.version,
+        )
+        if supported:
+            patch.supersede_findings.append(
+                SupersedeProposal(
+                    finding_id=finding.id,
+                    replacement=FindingProposal(
+                        id=f"v-{finding.id}",
+                        claim=finding.claim,
+                        confidence="high",
+                        evidence=finding.evidence,
+                    ),
+                )
+            )
+        else:
+            patch.add_validity_concerns.append(f"结论 {finding.claim[:40]} 复核未获支持")
+        try:
+            session_store.update_state(
+                session_id, patch, ttl_seconds=settings.session_ttl_seconds
+            )
+        except StateConflictError:
+            state = session_store.get_state(session_id)
+            patch.expected_version = state.version
+            session_store.update_state(
+                session_id, patch, ttl_seconds=settings.session_ttl_seconds
+            )
+        _finalize_request_state(session_store, settings, session_id, request_id, steps, context=context)
+        acted = True
+    return acted
+
+
+def _apply_restart(
+    session_store: SessionStore,
+    settings: Settings,
+    session_id: str,
+    request_id: str,
+    context: dict[str, Any],
+) -> bool:
+    """保守版 restart：保留已验证 findings + 拒绝项，重置候选与下一步计划。"""
+    state = session_store.get_state(session_id)
+    patch = DiagnosticPatch(
+        reason="outer_restart",
+        expected_version=state.version,
+        reject_candidates=list(state.current_candidates),
+        clear_current_candidates=True,
+        replace_next_step_plan=[],
+    )
+    try:
+        updated = session_store.update_state(
+            session_id, patch, ttl_seconds=settings.session_ttl_seconds
+        )
+    except StateConflictError:
+        state = session_store.get_state(session_id)
+        patch.expected_version = state.version
+        patch.reject_candidates = list(state.current_candidates)
+        updated = session_store.update_state(
+            session_id, patch, ttl_seconds=settings.session_ttl_seconds
+        )
+    _log_event(
+        "outer_loop_restart",
+        request_id=request_id,
+        session_id=session_id,
+        new_version=updated.version,
+        preserved_findings=len(updated.verified_findings),
+        rejected_kept=len(updated.rejected_candidates),
+    )
+    return True
+
+
+def _run_outer_loop(
+    settings: Settings,
+    session_store: SessionStore,
+    session_id: str,
+    request_id: str,
+    query: str,
+    context: dict[str, Any],
+    request_cache: dict[str, dict[str, Any]],
+    evidence_counter: dict[str, int],
+    event_sink: EventSink | None,
+    steps: list[StepRecord],
+    current_answer: str,
+    run_once: Callable[[], str],
+) -> dict[str, Any]:
+    """Agent 自省外环：逐轮按置信度决定 accept/verify/restart，轮尽回选历史最高置信版本。"""
+    outer_rounds = 0
+    decisions: list[str] = []
+    restart_used = 0
+    best: tuple[float | None, str] = (None, current_answer)
+    accepted_answer: str | None = None
+
+    def remember() -> None:
+        nonlocal best
+        state = session_store.get_state(session_id)
+        confidence = _audit_confidence(state)
+        # 平局时偏向更新版本，避免 restart 后的新鲜答案被旧低分覆盖。
+        if confidence is not None and (best[0] is None or confidence >= best[0]):
+            best = (confidence, current_answer)
+
+    remember()
+    for outer_no in range(1, MAX_OUTER_ROUNDS + 1):
+        state = session_store.get_state(session_id)
+        confidence = _audit_confidence(state)
+        unsatisfied = [
+            constraint
+            for constraint, status in state.constraint_status.items()
+            if status == "unsatisfied"
+        ]
+        decision = _outer_decision(confidence)
+        if decision == "accept":
+            _emit_outer_decision(
+                event_sink,
+                decision="accept",
+                confidence=confidence,
+                reason=f"约束置信 {confidence} 达到接受阈值",
+                round_no=outer_no,
+            )
+            decisions.append("accept")
+            outer_rounds += 1
+            accepted_answer = current_answer
+            break
+        if (
+            decision == "restart"
+            and restart_used < MAX_RESTART_ROUNDS
+            and _restart_recoverable(state)
+        ):
+            _emit_outer_decision(
+                event_sink,
+                decision="restart",
+                confidence=confidence,
+                reason=f"置信 {confidence} 低于重启阈值且轨迹可恢复性判定通过",
+                round_no=outer_no,
+            )
+            _apply_restart(session_store, settings, session_id, request_id, context)
+            current_answer = run_once()
+            restart_used += 1
+            decisions.append("restart")
+            outer_rounds += 1
+            remember()
+            continue
+        reason = f"置信 {confidence} 处于验证区间（未解决约束 {len(unsatisfied)} 条）"
+        _run_llm_verify(settings, session_store, session_id, request_id, state, current_answer)
+        _run_refine_pass(
+            session_store,
+            settings,
+            session_id,
+            request_id,
+            query,
+            context,
+            request_cache,
+            evidence_counter,
+            steps,
+        )
+        _run_deterministic_verify(
+            settings,
+            session_store,
+            session_id,
+            request_id,
+            query,
+            context,
+            request_cache,
+            evidence_counter,
+            steps,
+            outer_no,
+        )
+        _emit_outer_decision(
+            event_sink,
+            decision="verify",
+            confidence=confidence,
+            reason=reason,
+            round_no=outer_no,
+        )
+        decisions.append("verify")
+        outer_rounds += 1
+        remember()
+        state = session_store.get_state(session_id)
+        refreshed = _audit_confidence(state)
+        if refreshed is not None and refreshed >= ANSWER_CONFIDENCE_ACCEPT_THRESHOLD:
+            break
+    final_answer = accepted_answer if accepted_answer is not None else best[1]
+    if accepted_answer is None and best[1] != current_answer:
+        _log_event(
+            "outer_loop_fallback_select",
+            request_id=request_id,
+            session_id=session_id,
+            selected_confidence=best[0],
+        )
+    return {
+        "final_answer": final_answer,
+        "outer_rounds": outer_rounds,
+        "outer_decisions": decisions,
+    }
+
+
 def _build_tool(
     name: str,
     description: str,
@@ -1384,8 +1800,9 @@ def run_agent(
             ),
         )
 
-    try:
-        chat_history_messages = [HumanMessage(content=history_text)] if history_text.strip() else []
+    chat_history_messages = [HumanMessage(content=history_text)] if history_text.strip() else []
+
+    def run_once() -> str:
         result = agent_executor.invoke(
             {
                 "input": enhanced_input,
@@ -1393,6 +1810,20 @@ def run_agent(
             },
             config={"callbacks": [trace_callback]},
         )
+        answer = _cleanup_markdown(str(result["output"]))
+        answer = _append_evidence_block(answer, _collect_evidence_lines(trace_callback.steps))
+        _finalize_request_state(
+            session_store,
+            settings,
+            sid,
+            execution_request_id,
+            trace_callback.steps,
+            context=effective_context,
+        )
+        return answer
+
+    try:
+        final_answer = run_once()
     except Exception as exc:
         latency_ms = int((perf_counter() - started_at) * 1000)
         logger.exception(
@@ -1410,31 +1841,30 @@ def run_agent(
         )
         raise
 
-    latency_ms = int((perf_counter() - started_at) * 1000)
-
-    final_answer = _cleanup_markdown(str(result["output"]))
-    final_answer = _append_evidence_block(final_answer, _collect_evidence_lines(trace_callback.steps))
-    _append_history(session_store, settings, sid, query, final_answer)
-    _finalize_request_state(session_store, settings, sid, execution_request_id, trace_callback.steps, context=effective_context)
-    refine_rounds = _run_refine_pass(
-        session_store,
-        settings,
-        sid,
-        execution_request_id,
-        query,
-        effective_context,
-        request_cache,
-        evidence_counter,
-        trace_callback.steps,
-    )
-    if refine_rounds:
-        _log_event(
-            "agent_run_refined",
-            request_id=request_id,
-            session_id=sid,
-            refine_rounds=refine_rounds,
-            state_version=session_store.get_state(sid).version,
+    outer_rounds = 0
+    outer_decisions: list[str] = []
+    if settings.outer_loop_enabled:
+        outer = _run_outer_loop(
+            settings,
+            session_store,
+            sid,
+            execution_request_id,
+            query,
+            effective_context,
+            request_cache,
+            evidence_counter,
+            event_sink,
+            trace_callback.steps,
+            final_answer,
+            run_once,
         )
+        final_answer = outer["final_answer"]
+        outer_rounds = outer["outer_rounds"]
+        outer_decisions = outer["outer_decisions"]
+
+    _append_history(session_store, settings, sid, query, final_answer)
+
+    latency_ms = int((perf_counter() - started_at) * 1000)
 
     # steps = 工具调用每轮轨迹 + 一条总览 Agent 结果。
     steps: list[StepRecord] = trace_callback.steps + [
@@ -1458,6 +1888,8 @@ def run_agent(
         retrieve_hits=trace_callback.retrieve_hits,
         selected_tools=selected_tool_names,
         route_reason=route_reason,
+        outer_rounds=outer_rounds,
+        outer_decisions=outer_decisions,
         final_answer_preview=_preview(final_answer, max_len=160),
     )
 
@@ -1471,5 +1903,7 @@ def run_agent(
             tool_latency_ms=trace_callback.total_tool_latency_ms,
             tool_loop_count=len(trace_callback.steps),
             retrieve_hits=trace_callback.retrieve_hits,
+            outer_rounds=outer_rounds,
+            outer_decisions=outer_decisions,
         ),
     )

@@ -23,6 +23,8 @@ export const FIELD_LABELS: Record<string, string> = {
   tool_latency_ms: "工具耗时(毫秒)",
   tool_loop_count: "工具调用轮数",
   retrieve_hits: "检索命中数",
+  outer_rounds: "自省外环轮数",
+  outer_decisions: "外环决策序列",
   duration_ms: "耗时(毫秒)",
   thought: "思考",
   action: "动作",

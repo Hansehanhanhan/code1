@@ -89,6 +89,7 @@ class DiagnosticPatch(BaseModel):
     update_constraint_status: dict[str, Literal["satisfied", "unsatisfied", "unchecked"]] = Field(default_factory=dict)
     set_answer_confidence: float | None = Field(default=None, ge=0, le=1)
     add_citations: list[str] = Field(default_factory=list)
+    clear_current_candidates: bool = False
 
 
 class StateConflictError(ValueError):
@@ -205,6 +206,8 @@ def apply_diagnostic_patch(state: DiagnosticState, patch: DiagnosticPatch) -> Di
     _append_unique(updated.verified_citations, patch.add_citations)
     rejected = set(updated.rejected_candidates)
     updated.current_candidates = [item for item in updated.current_candidates if item not in rejected]
+    if patch.clear_current_candidates:
+        updated.current_candidates = []
 
     for constraint, status in patch.update_constraint_status.items():
         updated.constraint_status[constraint] = status

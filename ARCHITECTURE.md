@@ -40,7 +40,7 @@
   |  校验层: 鉴权/租户隔离/限流/输入安全/超时重试降级
   |  编排层: Tool-Calling Agent (function-calling) + 工具路由 + 早停
   |  状态层: 记忆仲裁 update_state（证据校验 + 容量限制 + 版本 CAS）
-  |          兜底 _finalize_request_state + refine 外环（上限 2 轮）
+  |          兜底 _finalize_request_state + 自省外环（verify/restart/refine，≤3 轮）
   v
 [Tools Layer]
   | traffic_analyze / ads_analyze / inventory_check / product_diagnose / update_context / retrieve_knowledge
@@ -164,7 +164,7 @@ sequenceDiagram
     AG->>AG: 沉淀证据（evidence_id/observation_hash 三字段引用）
     AG->>RAG: retrieve_knowledge() (if routed)
     AG->>TO: update_context(JSON patch) -> 服务端校验证据 + CAS 合并
-    AG->>AG: _finalize_request_state 兜底 + refine 外环（<=2 轮）
+    AG->>AG: _finalize_request_state 兜底 + 自省外环（verify/restart/refine，<=3 轮）
     AG->>SS: append_turn(...)
     AG-->>GOV: RunResponse
     GOV-->>API: response + attempts_used
@@ -306,11 +306,11 @@ sequenceDiagram
 ## 13. 已知限制
 1. 模拟工具为确定性注入的数据，未接入真实商家数据源。
 2. 会话短期记忆为窗口策略，长期记忆仅保留结构化诊断状态，未做摘要持久化。
-3. 初审 `verify/restart` 外环（对置信不足结论触发生成-验证-修订）尚未落地。
+3. 初审 `verify/restart` 外环的响应延迟不确定性：`OUTER_LOOP_ENABLED=false` 可关闭，外环总预算 `MAX_OUTER_ROUNDS=3`。
 
 ## 14. 演进路线（建议）
 1. ~~队列化与异步任务执行~~（已落地 `/jobs`）。
-2. Agent 自省外环：verify/restart 对低置信结论进行修订。
+2. ~~Agent 自省外环：verify/restart 对低置信结论进行修订~~（已落地：accept≥0.7 / verify 0.4~0.7 / restart<0.4，LLM 复核为主、确定性兜底，轮尽回选历史最高置信版本）。
 3. 前端消费 `key_step` 事件（`first_evidence`/`context_update`/`direction_repair`）做执行步骤可视化与证据展示。
 4. 会话记忆"短窗 + 摘要"混合策略与运行记录归档。
 5. 检索评测体系升级（离线评测集 + 指标看板）；多实例扩容与更细粒度限流熔断策略。
@@ -320,4 +320,4 @@ sequenceDiagram
 2. 记忆闭环验收：多轮会话中第二轮省略上下文不重复澄清、`state_version` 随新证据递增、findings 可溯源到真实工具证据（`evidence_id`/`observation_hash`）。
 3. 稳定性验收：超时、限流、降级路径可验证。
 4. 安全验收：鉴权与输入防护可触发并返回预期状态码；跨用户/跨商户访问 session、任务返回 403。
-5. 质量验收：CI 绿灯（`pytest` 131 passed），真实 API 端到端（`e2e_verify.py`）与两轮探针（`real_multi_round_probe.py`）通过。
+5. 质量验收：CI 绿灯（`pytest` 150 passed），真实 API 端到端（`e2e_verify.py`）与两轮探针（`real_multi_round_probe.py`）通过。

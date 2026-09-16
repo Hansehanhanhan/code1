@@ -27,6 +27,7 @@
 - `DiagnosticState`/`DiagnosticPatch` 新增（全部可选、向后兼容）：`constraint_status`（逐约束 satisfied/unsatisfied/unchecked）、`answer_confidence`（0..1）、`verified_citations`。
 - `_finalize_request_state` 兜底升级：把**带证据的分析工具结论**确定性提升为 findings 并回填 citations；按必需上下文 + 未解决约束计算 `constraint_status` 与 `answer_confidence`；无新增内容时幂等跳过。
 - 新增 AREX 外环 refine：`_run_refine_pass` 针对 `unsatisfied` 约束定向补查工具（关键字路由 + 请求级缓存），预算上限 `MAX_REFINE_ROUNDS=2`。
+- 新增 **Agent 自省外环 verify/restart**：`_run_outer_loop` 按确定性置信度（逐约束满足比例，退化到模型自报）三分决策 `accept≥0.7 / verify 0.4~0.7 / restart<0.4`；verify 路径以 LLM 复核（`_run_llm_verify` 逐约束 supported/unsupported/conflicting，失败回退确定性）为主、`_run_deterministic_verify`（低置信 findings 交叉验证 + refine 定向补查）兜底；restart 为保守版（保留 verified_findings/rejected_candidates，重置候选与计划，`MAX_RESTART_ROUNDS=1`）；轮尽回选历史最高置信版本。会话级开关 `OUTER_LOOP_ENABLED`（默认开），总预算 `MAX_OUTER_ROUNDS=3`，决策经 SSE `outer_decision` 事件透出并进入 `metrics.outer_rounds/outer_decisions`。
 - `GET /sessions/{session_id}` 返回新增三个字段。
 
 ### 3) Redis 专项测试（`tests/test_redis_store.py`）
@@ -297,7 +298,7 @@ $env:PYTHONPATH='.'
 - Jobs 取消/重试/幂等复用/重启恢复逻辑
 - Agent 澄清追问与证据来源附加逻辑
 
-当前测试结果：`131 passed`。其中 Fake LLM 记忆闭环（tool-calling Agent + ScriptedToolCallingModel）、确定性审计/refine 契约、缓存命中证据嵌入、工具输出按商家上下文确定性、`/jobs/{id}/stream` 回放与 `key_step`/`llm_observation` SSE 契约、Redis 专项测试均已覆盖；真实 API 探针（`real_multi_round_probe.py`）与端到端验证（`e2e_verify.py`）均已通过（`force_stopped=false`），验证模型自主调用 `update_context`、`finding_count >= 1`、`constraint_status` 非空，并在 HTTP 层闭环记忆。
+当前测试结果：`150 passed`。其中 Fake LLM 记忆闭环（tool-calling Agent + ScriptedToolCallingModel）、确定性审计/refine 契约、缓存命中证据嵌入、工具输出按商家上下文确定性、`/jobs/{id}/stream` 回放与 `key_step`/`llm_observation` SSE 契约、自省外环（决策阈值三分、LLM 复核解析与兜底、确定性交叉验证、保守 restart 保留已验证进度、`outer_decision` SSE 透出、Metrics 新字段）、Redis 专项测试均已覆盖；真实 API 探针（`real_multi_round_probe.py`）与端到端验证（`e2e_verify.py`）均已通过（`force_stopped=false`），验证模型自主调用 `update_context`、`finding_count >= 1`、`constraint_status` 非空，并在 HTTP 层闭环记忆。
 
 ## 结构化日志
 
@@ -464,6 +465,7 @@ time_range: last_7_days
 - `APP_CORS_ORIGINS`：CORS 白名单（逗号分隔，默认本地前端域名）
 - `APP_CORS_ALLOW_CREDENTIALS`：是否允许凭证（默认 `false`；当 origin 为 `*` 时会强制关闭）
 - `AGENT_VERBOSE`：是否开启 Agent verbose 日志（默认 `false`）
+- `OUTER_LOOP_ENABLED`：是否开启 Agent 自省外环 verify/restart（默认 `true`，置 `false` 关闭）
 
 ### 身份隔离（P0）
 启用 `APP_AUTH_ENABLED=true` 后，请求会在鉴权之外做三层校验：

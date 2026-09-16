@@ -11,6 +11,8 @@ const METRIC_PRIORITY_KEYS = [
   "llm_latency_ms",
   "tool_latency_ms",
   "retrieve_hits",
+  "outer_rounds",
+  "outer_decisions",
   "event_count",
   "event_completeness",
   "fallback_used",
@@ -26,6 +28,8 @@ function eventSummary(evt: StreamEvent) {
       return `LLM 思考 ${evt.content.duration_ms} 毫秒`;
     case "key_step":
       return null;
+    case "outer_decision":
+      return `自省外环 R${evt.content.round} ${evt.content.decision}（置信 ${evt.content.confidence ?? "—"}）：${evt.content.reason}`;
     case "degraded_response":
       return `服务降级：${evt.content.reason}`;
     default:

@@ -48,6 +48,9 @@ class Metrics(BaseModel):
     tool_latency_ms: int = Field(default=0, ge=0)
     tool_loop_count: int = Field(default=0, ge=0)
     retrieve_hits: int = Field(default=0, ge=0)
+    # Agent 自省外环：决策轮数与被采纳的决策序列。
+    outer_rounds: int = Field(default=0, ge=0)
+    outer_decisions: list[str] = Field(default_factory=list)
     # 流式场景指标：首包延迟、事件数、完整性。
     ttfb_ms: int | None = Field(default=None, ge=0)
     event_count: int | None = Field(default=None, ge=0)

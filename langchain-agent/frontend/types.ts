@@ -87,11 +87,19 @@ export type StreamMetricsContent = {
   degraded?: boolean;
 };
 
+export type OuterDecisionContent = {
+  decision: "accept" | "verify" | "restart";
+  confidence: number | null;
+  reason: string;
+  round: number;
+};
+
 export type StreamEvent =
   | { type: "agent_action"; content: AgentActionContent }
   | { type: "tool_observation"; content: ToolObservationContent }
   | { type: "llm_observation"; content: LlmObservationContent }
   | { type: "key_step"; content: KeyStepEvent }
+  | { type: "outer_decision"; content: OuterDecisionContent }
   | { type: "stream_metrics"; content: StreamMetricsContent }
   | { type: "final_response"; content: RunResponse }
   | { type: "degraded_response"; content: { reason: string } }

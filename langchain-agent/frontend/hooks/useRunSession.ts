@@ -54,6 +54,12 @@ export function useRunSession() {
         case "key_step":
           setMilestones((prev) => [...prev, evt.content]);
           break;
+        case "outer_decision":
+          setNotes((prev) => [
+            ...prev,
+            `自省外环 R${evt.content.round} 决策 ${evt.content.decision}（置信 ${evt.content.confidence ?? "—"}）：${evt.content.reason}`,
+          ]);
+          break;
         case "degraded_response":
           setNotes((prev) => [...prev, `服务降级：${evt.content.reason}`]);
           break;

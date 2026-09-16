@@ -19,7 +19,7 @@
 
 ## 0.1 落地状态（2026-09-15 核对）
 
-P1 / P2 / P3 三个阶段均已实现，与 v2 设计一致；当前测试基线 `131 passed`，真实 API 两轮探针与 `scripts/e2e_verify.py`（32/32）通过。实现核对差异如下：
+P1 / P2 / P3 三个阶段均已实现，与 v2 设计一致；当前测试基线 `150 passed`，真实 API 两轮探针与 `scripts/e2e_verify.py`（32/32）通过。原“初审 verify/restart 外环”已落地为自省外环。实现核对差异如下：
 
 | 设计点 | v2 原述 | 实现核对 |
 |---|---|---|
@@ -29,6 +29,7 @@ P1 / P2 / P3 三个阶段均已实现，与 v2 设计一致；当前测试基线
 | 请求内缓存命中 | 未提及 | 缓存命中分支同样嵌入证据引用（同一 `evidence_id` 语义、序号递增），保证模型读到的每条 Observation 都携带合法引用 |
 | 澄清流程重排 | §5 新流程 | `_merge_context_with_slots`（agent.py:517）→ `_missing_context_keys`（agent.py:1293）：请求覆盖 → context_slots 补全 → 澄清，第二轮省略上下文不重复澄清已验证 |
 | 服务端兜底 | §12 P3 | `_finalize_request_state` 确定性沉淀（带证据结论提升为 findings 并回填 citations、recommendations → candidates、异常 summary → unresolved_constraints）+ AREX 外环 `_run_refine_pass`（`MAX_REFINE_ROUNDS=2`） |
+| 自省外环 | v2“初审 verify/restart” | `_run_outer_loop` 已落地：确定性置信三分 `accept≥0.7/verify 0.4~0.7/restart<0.4`；verify 以 LLM 复核（`_run_llm_verify` 逐约束 verdict、失败回退确定性交叉验证+refine）为主；restart 为保守版保留已验证进度（`MAX_RESTART_ROUNDS=1`）；总预算 `MAX_OUTER_ROUNDS=3`、会话级开关 `OUTER_LOOP_ENABLED`；决策经 SSE `outer_decision` 透出并进入 `metrics.outer_rounds/outer_decisions` |
 | 工具输出确定性 | 未提及 | 模拟工具信号按商家上下文确定性输出（`_weak_signal`），同一商家不同措辞恒定 |
 | 并发与双后端 | §7 / §9 | Redis WATCH+CAS、内存全事务锁；`tests/test_redis_store.py` 独立 `/15` 库专项覆盖（CAS 冲突、双后端一致、并发不丢、TTL、淘汰） |
 | 身份隔离 §8 | "未完成，P0 前置" | P0 已落地：`api_keys.json` 身份映射（`backend/identities.py`）+ session 所有者绑定 + merchant 权限 + jobs 归属校验（401 / 403） |
@@ -342,7 +343,7 @@ h_eff = DiagnosticState(z) ⊕ recent_raw_turns(last 4)
 
 - 每次 update_state 记日志：`{request_id, session_id, expected_version, new_version, reason, before, after}`
 - 证据表本身可查询（"这条 finding 是哪次工具调用来的"）
-- 状态演化轨迹可回放（面试讲"可观测"的实物）
+- 状态演化轨迹可回放
 
 生产日志默认记录版本、事件类型、finding ID、状态 hash 和变更摘要，不直接打印完整业务状态；完整 before/after 仅在脱敏后的调试模式保存。证据记录和诊断状态分别设置 TTL，状态更新重试完成前不得清理证据。
 
@@ -418,30 +419,11 @@ h_eff = DiagnosticState(z) ⊕ recent_raw_turns(last 4)
 | LLM 不调 update_context | 服务端兜底：工具证据自动记录 + 请求结束状态快照 |
 | patch 证据校验过严导致模型频繁失败 | 错误信息明确（指出哪条缺 evidence），允许重试；兜底路径不依赖模型 |
 | 状态/证据表增长 | 状态 8KB 硬限 + 淘汰；证据表随请求生命周期，请求结束归档 |
-| 面试被问"为什么服务端不信任模型" | 这是设计亮点：**"模型提议、服务端仲裁"**——防止幻觉污染状态，这是资深工程观 |
+| 为什么服务端不信任模型 | 这是设计亮点：**"模型提议、服务端仲裁"**——防止幻觉污染状态，这是资深工程观 |
 
 ---
 
-## 15. 面试与简历讲法（v2 更新）
-
-### 简历候选条目
-
-> 多轮诊断记忆升级：参考 AREX（BAAI）update_context 设计，将对话历史沉淀为结构化诊断状态（已验证发现/未解决约束/已排除方向），**由 Agent 提交增量提议、服务端校验证据后合并**，长会话不丢信息、结论可溯源
-
-### 面试 30 秒讲法
-
-> "我参考智源 AREX 的 update_context 设计，把记忆从'对话摘要'升级成'诊断状态机'。关键设计是**模型不直接覆盖状态**——它提交增量提议（我想记住这条结论、排除这个方向），服务端负责合并、去重、限长、版本控制，而且每条结论必须绑定真实工具执行的证据（request_id + observation hash），模型不能编造来源。这样状态是可靠的、并发安全的、可追溯的。"
-
-### 预设追问
-
-- **为什么不让 LLM 直接写状态？** → 模型记不全旧状态，完整覆盖会丢已验证结论；而且无法防止它编造来源。提议-仲裁分离是工程底线
-- **快速路径不经过 Agent 怎么办？** → 快速路径由服务端确定性写状态（工具证据自动落库），不依赖模型
-- **并发怎么办？** → version + CAS；内存版全事务锁
-- **状态越来越大？** → 服务端硬限制 + 按置信度和时效淘汰，淘汰进日志可审计
-
----
-
-## 16. 前置条件与资源
+## 15. 前置条件与资源
 
 - [x] P1/P2 可离线开发测试（不需要 API key）
 - [x] P3 需要 OpenAI 兼容 API key 端到端（`real_multi_round_probe.py` / `e2e_verify.py` 已通过）

@@ -149,8 +149,8 @@ npm run dev
 默认访问 `http://127.0.0.1:3000`（前端默认指向 `http://127.0.0.1:8000`）。本机测试建议保持 Redis 可用（`SESSION_BACKEND=redis` 时状态跨请求闭环）。
 
 ## 下一步计划
-- 前端消费 `key_step` 事件（`first_evidence`/`context_update`/`direction_repair`）做执行步骤可视化突出与证据展示
-- Agent 自省外环：verify/restart（对置信不足的结论触发生成-验证-修订）
+- ~~前端消费 `key_step` 事件（`first_evidence`/`context_update`/`direction_repair`）做执行步骤可视化突出与证据展示~~ 已落地
+- ~~Agent 自省外环：verify/restart（对置信不足的结论触发生成-验证-修订）~~ 已落地：`accept≥0.7 / verify 0.4~0.7 / restart<0.4`，LLM 复核 + 确定性兜底，SSE `outer_decision` 事件透出，开关 `OUTER_LOOP_ENABLED`
 
 ## 说明
 
