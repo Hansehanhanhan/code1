@@ -4,11 +4,11 @@ import type {
   JobCreateResponse,
   JobState,
   JobStatusResponse,
-  JobStreamFrame,
   StreamEvent,
 } from "@/types";
 import { buildAuthHeaders, buildHeaders, joinUrl } from "@/lib/api";
 import { readSseStream } from "@/lib/sse";
+import { parseEventFrame } from "@/lib/guards";
 
 export function useJobStream(baseUrl: string, apiKey: string) {
   const [job, setJob] = useState<JobState | null>(null);
@@ -33,7 +33,6 @@ export function useJobStream(baseUrl: string, apiKey: string) {
       aborterRef.current?.abort();
       const controller = new AbortController();
       aborterRef.current = controller;
-      setJobEvents([]);
 
       try {
         const res = await fetch(joinUrl(jobsEndpoint, "jobs", jobId, "stream"), {
@@ -52,13 +51,19 @@ export function useJobStream(baseUrl: string, apiKey: string) {
           if (token !== tokenRef.current) {
             return;
           }
-          const frame = obj as JobStreamFrame;
+          const frame = parseEventFrame(obj);
+          if (!frame) {
+            console.warn("[job-stream] 忽略非法帧", obj);
+            return;
+          }
           if (frame.type === "heartbeat") {
             return;
           }
-          const evt = { type: frame.type, content: frame.content } as StreamEvent;
+          const evt = frame as unknown as StreamEvent;
           if (evt.type === "final_response") {
-            setJob((prev) => (prev ? { ...prev, status: "succeeded" } : prev));
+            setJob((prev) =>
+              prev && prev.status !== "degraded" ? { ...prev, status: "succeeded" } : prev
+            );
           } else if (evt.type === "degraded_response") {
             setJob((prev) => (prev ? { ...prev, status: "degraded" } : prev));
           } else if (evt.type === "error") {
@@ -110,6 +115,7 @@ export function useJobStream(baseUrl: string, apiKey: string) {
       stopSubscription();
       setError("");
       setNotice("");
+      setJobEvents([]);
       setActionLoading(true);
       try {
         const res = await fetch(joinUrl(jobsEndpoint, "jobs"), {

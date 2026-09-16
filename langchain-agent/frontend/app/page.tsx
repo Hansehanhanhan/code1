@@ -65,6 +65,7 @@ export default function Home() {
   useEffect(() => {
     return () => {
       jobHook.stopSubscription();
+      runSession.stopRun();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import type { KeyStepEvent, RunResponse, StepRecord, StreamEvent } from "@/types";
 import { readSseStream } from "@/lib/sse";
+import { sanitizeStreamEvent } from "@/lib/guards";
 import { upsertLoopStep } from "@/lib/format";
 
 export function useRunSession() {
@@ -13,6 +14,10 @@ export function useRunSession() {
   const [tick, setTick] = useState(0);
   const stepsRef = useRef<StepRecord[]>([]);
   const finalRef = useRef<RunResponse | null>(null);
+  const genRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const isActive = useCallback((gen: number) => gen === genRef.current, []);
 
   const setLive = useCallback((steps: StepRecord[]) => {
     setResponse((prev) => ({
@@ -87,6 +92,9 @@ export function useRunSession() {
   );
 
   const reset = useCallback(() => {
+    genRef.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
     stepsRef.current = [];
     finalRef.current = null;
     setDegraded(false);
@@ -94,7 +102,12 @@ export function useRunSession() {
     setNotes([]);
     setError("");
     setResponse({ final_answer: "", steps: [], metrics: {} });
-    setLoading(false);
+  }, []);
+
+  const stopRun = useCallback(() => {
+    genRef.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
   }, []);
 
   const bumpRefresh = useCallback(() => {
@@ -107,36 +120,61 @@ export function useRunSession() {
     headers: Record<string, string>,
     onFinished?: (response: RunResponse | null) => void
   ) {
-    setLoading(true);
     reset();
+    setLoading(true);
+    const gen = genRef.current;
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    const dispatch = (obj: unknown) => {
+      if (!isActive(gen)) {
+        return;
+      }
+      const evt = sanitizeStreamEvent(obj);
+      if (!evt) {
+        console.warn("[run-stream] 忽略非法事件帧", obj);
+        return;
+      }
+      handleStreamEvent(evt);
+    };
+
     try {
       const res = await fetch(url, {
         method: "POST",
         headers,
         body: JSON.stringify(payload),
+        signal: controller.signal,
       });
-
+      if (!isActive(gen)) {
+        return;
+      }
       if (!res.ok) {
         throw new Error(`请求失败：${res.status} ${res.statusText}`);
       }
 
       if (!res.body) {
         const data = (await res.json()) as RunResponse;
-        setResponse(data);
-        onFinished?.(data);
+        if (isActive(gen)) {
+          setResponse(data);
+          onFinished?.(data);
+        }
         return;
       }
 
-      await readSseStream(res.body.getReader(), (obj) => {
-        handleStreamEvent(obj as StreamEvent);
-      });
-
-      onFinished?.(finalRef.current);
+      await readSseStream(res.body.getReader(), dispatch);
+      if (isActive(gen)) {
+        onFinished?.(finalRef.current);
+      }
     } catch (err) {
+      if (!isActive(gen) || controller.signal.aborted) {
+        return;
+      }
       setError(err instanceof Error ? err.message : "请求失败，请稍后重试。");
       onFinished?.(null);
     } finally {
-      setLoading(false);
+      if (isActive(gen)) {
+        setLoading(false);
+      }
     }
   }
 
@@ -150,6 +188,7 @@ export function useRunSession() {
     refreshToken: tick,
     handleStreamEvent,
     reset,
+    stopRun,
     runStream,
     bumpRefresh,
   };
