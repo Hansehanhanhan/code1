@@ -113,7 +113,7 @@
 ### 6.2 `/run_stream` 流式流程
 1. 前置校验同 `/run`。
 2. 创建事件 sink，运行 Agent 时推送事件。
-3. 持续输出 `agent_action/tool_observation/llm_observation/key_step/final_response/error/stream_metrics`（`key_step` 含 `first_evidence` / `context_update` / `direction_repair`）。
+3. 持续输出 `agent_action/tool_observation/llm_observation/key_step/final_response/error/stream_metrics`（`key_step` 含 `first_evidence` / `context_update` / `direction_repair` / `context_update_rejected`）。
 4. 前端边收边渲染执行过程。
 
 ### 6.3 Tool-Calling 执行流程
@@ -122,7 +122,7 @@
 3. 模型可通过 `update_context` 提交增量 patch（add/supersede/reject + context_slots），服务端校验证据后合并。
 4. 达到停止条件后输出 Final Answer；请求结束 `_finalize_request_state` 兜底沉淀（模型未调 update_context 也不丢基础结论）。
 5. 记录步骤轨迹、证据引用与阶段耗时；迭代上限 12。
-6. 流式事件除 `agent_action/tool_observation/final_response` 外，新增关键步事件 `key_step`（`first_evidence` / `context_update` / `direction_repair`）。
+6. 流式事件除 `agent_action/tool_observation/final_response` 外，新增关键步事件 `key_step`（`first_evidence` / `context_update` / `direction_repair` / `context_update_rejected`）。
 
 ### 6.4 `/jobs` 异步任务流程
 1. 接收任务创建请求，支持可选 `idempotency_key` 幂等提交。
@@ -262,7 +262,7 @@ sequenceDiagram
    - `version` 用于乐观锁 CAS（Redis WATCH/CAS，内存全事务锁）。
 3. 证据引用：每次工具调用沉淀 `evidence_id` / `request_id` / `observation_hash`（三字段）；`update_context` 提议的 finding 必须引用本次请求真实执行过的证据，否则整条拒绝。
 4. 兜底仲裁：请求结束 `_finalize_request_state` 把带证据的工具结论确定性提升为 findings 并回填 citations（无新增内容时 CAS 幂等跳过）；`unsatisfied` 约束触发定向 refine。
-5. 会话快照：`GET /sessions/{session_id}` 返回状态快照（含 `state_version`、findings 数、归属校验）。
+5. 会话快照：`GET /sessions/{session_id}` 返回状态快照（含 `version`、findings 数、归属校验）。
 
 ## 9. 稳定性与安全治理
 
@@ -283,7 +283,7 @@ sequenceDiagram
 1. 结构化日志（JSON）统一字段：`request_id/session_id/endpoint/status/latency/error_type`。
 2. 分阶段指标：`llm_latency_ms/tool_latency_ms/tool_loop_count/retrieve_hits`。
 3. 流式特有指标：`ttfb_ms/event_count/event_completeness`。
-4. 关键步事件：`key_step`（`first_evidence` / `context_update` / `direction_repair`）。
+4. 关键步事件：`key_step`（`first_evidence` / `context_update` / `direction_repair` / `context_update_rejected`）。
 5. 统计接口：`/metrics/error_types`、`/metrics/stability`。
 
 ## 11. 部署架构
@@ -311,13 +311,13 @@ sequenceDiagram
 ## 14. 演进路线（建议）
 1. ~~队列化与异步任务执行~~（已落地 `/jobs`）。
 2. ~~Agent 自省外环：verify/restart 对低置信结论进行修订~~（已落地：accept≥0.7 / verify 0.4~0.7 / restart<0.4，LLM 复核为主、确定性兜底，轮尽回选历史最高置信版本）。
-3. 前端消费 `key_step` 事件（`first_evidence`/`context_update`/`direction_repair`）做执行步骤可视化与证据展示。
+3. ~~前端消费 `key_step` 事件（`first_evidence`/`context_update`/`direction_repair`）做执行步骤可视化与证据展示~~（已落地：前端按 `key_step` 事件流式渲染执行步骤与证据）。
 4. 会话记忆"短窗 + 摘要"混合策略与运行记录归档。
 5. 检索评测体系升级（离线评测集 + 指标看板）；多实例扩容与更细粒度限流熔断策略。
 
 ## 15. 验收标准
 1. 功能验收：同步/流式接口稳定可用，RAG 可返回结构化证据。
-2. 记忆闭环验收：多轮会话中第二轮省略上下文不重复澄清、`state_version` 随新证据递增、findings 可溯源到真实工具证据（`evidence_id`/`observation_hash`）。
+2. 记忆闭环验收：多轮会话中第二轮省略上下文不重复澄清、`version` 随新证据递增、findings 可溯源到真实工具证据（`evidence_id`/`observation_hash`）。
 3. 稳定性验收：超时、限流、降级路径可验证。
 4. 安全验收：鉴权与输入防护可触发并返回预期状态码；跨用户/跨商户访问 session、任务返回 403。
 5. 质量验收：CI 绿灯（`pytest` 150 passed），真实 API 端到端（`e2e_verify.py`）与两轮探针（`real_multi_round_probe.py`）通过。

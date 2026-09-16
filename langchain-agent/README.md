@@ -20,7 +20,7 @@
 - Agent 从文本 ReAct（`create_react_agent`）切换为 **function-calling tool-calling**（`create_tool_calling_agent`），工具参数改为结构化 `{query, context}`，`update_context` 输入为 JSON 字符串 patch。
 - 新增 `TOOL_CALLING_SYSTEM_PROMPT`：声明「每请求至少调用一次 `update_context`」，触发时机、few-shot patch（含证据复制约束）、逐约束状态上报（`update_constraint_status`）与置信度（`set_answer_confidence`）。
 - 真实 deepseek-flash 探针验证：模型**自主调用 `update_context`**（如 `reason="traffic_trend_analysis_completed_with_conflicting_observations"`），写出带合法 evidence 的高置信 findings，并自报 `channel_level_breakdown`/`funnel_level_breakdown` 等约束状态与置信度——上一轮 `finding_count=0` 的缺口已关闭。
-- 新增 P3 关键步事件：`first_evidence`（首条带证据分析结论）、`context_update`、`direction_repair`（提交 `reject_candidates` 时）。
+- 新增 P3 关键步事件：`first_evidence`（首条带证据分析结论）、`context_update`、`direction_repair`（提交 `reject_candidates` 时）、`context_update_rejected`（补丁被服务端拒绝时）。
 - 路由/完整路径迭代上限 8 → 12，给冲突排查留出收敛空间。
 
 ### 2) 状态模型扩展（服务端确定性审计 + 证据提升）
@@ -94,11 +94,11 @@ langchain-agent/
 ## 启动
 
 ```powershell
-cd E:\code
+cd <项目根目录>
 .\.venv\Scripts\python.exe -m pip install -U pip
 .\.venv\Scripts\python.exe -m pip install -r .\langchain-agent\requirements.txt
 
-cd E:\code\langchain-agent
+cd langchain-agent
 $env:PYTHONPATH='.'
 & "..\.venv\Scripts\python.exe" -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 ```
@@ -139,14 +139,14 @@ Redis 状态更新使用版本 CAS；Redis 不可用时，应用会按现有治�
 
 工具执行先生成 `evidence_id` 和 `observation_hash`，模型再通过 `update_context` 提交增量 patch。服务端校验请求归属、Evidence hash、状态版本和容量限制后才写入状态。
 
-**服务端兜底（不依赖 LLM）**：无论模型是否调用 `update_context`，每次请求结束后服务端都会确定性沉淀本轮工具证据——带 evidence 的分析工具结论提升为 `verified_findings` 并回填 citations；工具 `recommendations` 进入 `current_candidates`，执行异常工具的 `summary` 进入 `unresolved_constraints`；同时计算 `constraint_status` 与 `answer_confidence`。无新增内容时跳过写入（CAS 幂等）。若存在 `unsatisfied` 约束，还会触发一轮定向 refine 补查（上限 2 轮）。因此真实多轮中 `state_version` 会随新证据递增，且第二轮省略上下文时直接从 `context_slots` 补全、不再重复澄清。
+**服务端兜底（不依赖 LLM）**：无论模型是否调用 `update_context`，每次请求结束后服务端都会确定性沉淀本轮工具证据——带 evidence 的分析工具结论提升为 `verified_findings` 并回填 citations；工具 `recommendations` 进入 `current_candidates`，执行异常工具的 `summary` 进入 `unresolved_constraints`；同时计算 `constraint_status` 与 `answer_confidence`。无新增内容时跳过写入（CAS 幂等）。若存在 `unsatisfied` 约束，还会触发一轮定向 refine 补查（上限 2 轮）。因此真实多轮中 `version` 会随新证据递增，且第二轮省略上下文时直接从 `context_slots` 补全、不再重复澄清。
 
 验证：`python scripts/real_multi_round_probe.py`（真实 API 两轮探针，结果写入 `_real_multi_probe_result.json`，验收 `finding_count >= 1` 且 `constraint_status` 非空）；`python scripts/e2e_verify.py`（真实 LLM × 真实 HTTP 端到端验证，默认自动拉起后端子进程，覆盖 `/run_stream` SSE 事件序列、`/sessions` 状态演化、`/run` 同步、`/jobs` 异步与 `/jobs/{id}/stream` 回放，结果写入 `_e2e_result.json`，任一断言不通过则 exit 1）。
 
 ## 前端联调（可选）
 
 ```powershell
-cd E:\code\langchain-agent\frontend
+cd langchain-agent\frontend
 npm install
 npm run dev
 ```
@@ -283,10 +283,10 @@ await fetch(`${backendUrl}/run`, {
 ## 测试
 
 ```powershell
-cd E:\code
+cd <项目根目录>
 .\.venv\Scripts\python.exe -m pip install -r .\langchain-agent\requirements-dev.txt
 
-cd E:\code\langchain-agent
+cd langchain-agent
 $env:PYTHONPATH='.'
 & "..\.venv\Scripts\python.exe" -m pytest -q
 ```
@@ -392,7 +392,7 @@ $env:PYTHONPATH='.'
 启动命令：
 
 ```powershell
-cd E:\code\langchain-agent
+cd langchain-agent
 $env:PYTHONPATH='.'
 & "..\.venv\Scripts\python.exe" -m mcp_server.server
 ```
@@ -400,7 +400,7 @@ $env:PYTHONPATH='.'
 若报 `mcp` 缺失，请先安装依赖：
 
 ```powershell
-cd E:\code
+cd <项目根目录>
 .\.venv\Scripts\python.exe -m pip install -r .\langchain-agent\requirements.txt
 ```
 
@@ -486,7 +486,7 @@ time_range: last_7_days
 先复制配置：
 
 ```powershell
-cd E:\code\langchain-agent
+cd langchain-agent
 Copy-Item .env.example .env -Force
 # 然后编辑 .env，填入 OPENAI_API_KEY
 ```
@@ -494,7 +494,7 @@ Copy-Item .env.example .env -Force
 使用 Docker Compose 启动后端 + Redis：
 
 ```powershell
-cd E:\code\langchain-agent
+cd langchain-agent
 docker compose up --build
 ```
 
@@ -511,14 +511,14 @@ docker compose up --build
 单场景示例：
 
 ```powershell
-cd E:\code\langchain-agent
+cd langchain-agent
 & "..\.venv\Scripts\python.exe" .\scripts\load_test.py --url http://127.0.0.1:8000/health --requests 500 --concurrency 50 --output .\docs\load_test_single.json
 ```
 
 矩阵场景示例：
 
 ```powershell
-cd E:\code\langchain-agent
+cd langchain-agent
 & "..\.venv\Scripts\python.exe" .\scripts\load_test_matrix.py --cases-file .\docs\load_test_cases.json --output-json .\docs\load_test_results.json --output-md .\docs\load_test_results.md
 ```
 
@@ -532,7 +532,7 @@ cd E:\code\langchain-agent
 示例：
 
 ```powershell
-cd E:\code\langchain-agent
+cd langchain-agent
 $env:PYTHONPATH='.'
 & "..\.venv\Scripts\python.exe" .\scripts\run_badcase_regression.py
 ```
@@ -540,7 +540,7 @@ $env:PYTHONPATH='.'
 可选参数示例（适合 CI 或鉴权开启场景）：
 
 ```powershell
-cd E:\code\langchain-agent
+cd langchain-agent
 $env:PYTHONPATH='.'
 & "..\.venv\Scripts\python.exe" .\scripts\run_badcase_regression.py --base-url http://127.0.0.1:8000 --output .\docs\bad_case_results.json --ready-timeout 60 --request-timeout 15 --api-key your_api_key
 ```
@@ -557,6 +557,6 @@ $env:PYTHONPATH='.'
 本地可手动执行门禁评估：
 
 ```powershell
-cd E:\code\langchain-agent
+cd langchain-agent
 & "..\.venv\Scripts\python.exe" .\scripts\eval_badcase.py --input .\docs\bad_case_results.json --min-pass-rate 0.9 --max-avg-latency-ms 30000 --require-status 200 --require-expected false
 ```

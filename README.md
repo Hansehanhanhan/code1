@@ -17,7 +17,7 @@
 ## 项目目录结构
 
 ```text
-E:\CODE
+code1-master/
 ├── langchain-agent/          # LangChain 版本 (Framework Optimized)
 │   ├── agent/                # 基于 LangChain 的 Agent 实现
 │   ├── backend/              # FastAPI 后端实现
@@ -45,7 +45,7 @@ E:\CODE
 ### 3) 端到端验证与测试
 - 新增 `scripts/e2e_verify.py`：真实 LLM × 真实 HTTP 端到端验证（默认自动拉起后端子进程），覆盖 `/run_stream` SSE 事件序列、`/sessions` 状态演化、`/run` 同步、`/jobs` 异步与 `/jobs/{id}/stream` 回放，全部断言通过（32/32）。
 - 新增 `scripts/real_multi_round_probe.py`：两轮真实 API 探针，验收模型自主调用 `update_context`、`finding_count >= 1`、`constraint_status` 非空（本轮 `force_stopped=false`）。
-- 测试基线：`131 passed`。
+- 测试基线：`150 passed`（本机 Redis；CI 无 Redis 时为 `141 passed + 9 skipped`）。
 
 ### 4) 可运行性
 - 本机可直接启动前后端联调：后端 `uvicorn backend.main:app`（:8000，端点 `/run_stream`、`/run`、`/jobs`、`/sessions`），前端 `npm run dev`（:3000，Next.js 15）。
@@ -130,10 +130,10 @@ E:\CODE
 常用启动方式（主线）：
 
 ```powershell
-cd E:\code
+cd <项目根目录>
 .\langchain-agent\.venv\Scripts\python.exe -m pip install -r .\langchain-agent\requirements.txt
 
-cd E:\code\langchain-agent
+cd langchain-agent
 $env:PYTHONPATH='.'
 & ".\.venv\Scripts\python.exe" -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 ```
@@ -141,7 +141,7 @@ $env:PYTHONPATH='.'
 前端（可选）：
 
 ```powershell
-cd E:\code\langchain-agent\frontend
+cd langchain-agent\frontend
 npm install
 npm run dev
 ```

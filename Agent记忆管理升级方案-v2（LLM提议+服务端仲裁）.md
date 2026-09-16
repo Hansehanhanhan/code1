@@ -27,13 +27,13 @@ P1 / P2 / P3 三个阶段均已实现，与 v2 设计一致；当前测试基线
 | patch 载体 | `update_context` 工具 | 工具参数为结构化 `{query, context}`，`update_context` 以 JSON 字符串提交增量 patch，服务端解析校验并 CAS 合并 |
 | 证据引用字段 | `evidence_id` / `observation_hash` 等 | 收敛为**纯三字段** `{evidence_id, request_id, observation_hash}`；`tool` / `observation_preview` / `tool_call_id` 不被接受；`tool_call_id` 由 `evidence_id` 后缀推导 |
 | 请求内缓存命中 | 未提及 | 缓存命中分支同样嵌入证据引用（同一 `evidence_id` 语义、序号递增），保证模型读到的每条 Observation 都携带合法引用 |
-| 澄清流程重排 | §5 新流程 | `_merge_context_with_slots`（agent.py:517）→ `_missing_context_keys`（agent.py:1293）：请求覆盖 → context_slots 补全 → 澄清，第二轮省略上下文不重复澄清已验证 |
+| 澄清流程重排 | §5 新流程 | `_merge_context_with_slots`（agent.py:473）→ `_missing_context_keys`（agent.py:549）：请求覆盖 → context_slots 补全 → 澄清，第二轮省略上下文不重复澄清已验证 |
 | 服务端兜底 | §12 P3 | `_finalize_request_state` 确定性沉淀（带证据结论提升为 findings 并回填 citations、recommendations → candidates、异常 summary → unresolved_constraints）+ AREX 外环 `_run_refine_pass`（`MAX_REFINE_ROUNDS=2`） |
 | 自省外环 | v2“初审 verify/restart” | `_run_outer_loop` 已落地：确定性置信三分 `accept≥0.7/verify 0.4~0.7/restart<0.4`；verify 以 LLM 复核（`_run_llm_verify` 逐约束 verdict、失败回退确定性交叉验证+refine）为主；restart 为保守版保留已验证进度（`MAX_RESTART_ROUNDS=1`）；总预算 `MAX_OUTER_ROUNDS=3`、会话级开关 `OUTER_LOOP_ENABLED`；决策经 SSE `outer_decision` 透出并进入 `metrics.outer_rounds/outer_decisions` |
 | 工具输出确定性 | 未提及 | 模拟工具信号按商家上下文确定性输出（`_weak_signal`），同一商家不同措辞恒定 |
 | 并发与双后端 | §7 / §9 | Redis WATCH+CAS、内存全事务锁；`tests/test_redis_store.py` 独立 `/15` 库专项覆盖（CAS 冲突、双后端一致、并发不丢、TTL、淘汰） |
 | 身份隔离 §8 | "未完成，P0 前置" | P0 已落地：`api_keys.json` 身份映射（`backend/identities.py`）+ session 所有者绑定 + merchant 权限 + jobs 归属校验（401 / 403） |
-| session 快照 | `get_snapshot` | `GET /sessions/{session_id}` 返回状态快照（含 `state_version`、findings 数等） |
+| session 快照 | `get_snapshot` | `GET /sessions/{session_id}` 返回状态快照（含 `version`、findings 数等） |
 
 > 正文保留 v2 的设计原述作为评审基线，上表为实现核对记录。原正文中的行号引用（`agent.py:691` 澄清位置、`agent.py:730` 快速路径）为旧版代码，已随重构失效，以核对表为准。
 
@@ -66,9 +66,7 @@ P1 / P2 / P3 三个阶段均已实现，与 v2 设计一致；当前测试基线
       "claim": "近 7 天流量下滑 22%，主要来自搜索渠道",
       "evidence": {
         "evidence_id": "req_0001:tool_0003",
-        "tool": "traffic_analyze",
         "request_id": "req_0001",
-        "tool_call_id": "tool_0003",
         "observation_hash": "sha256:9f86d0..."
       },
       "confidence": "high",
@@ -427,6 +425,6 @@ h_eff = DiagnosticState(z) ⊕ recent_raw_turns(last 4)
 
 - [x] P1/P2 可离线开发测试（不需要 API key）
 - [x] P3 需要 OpenAI 兼容 API key 端到端（`real_multi_round_probe.py` / `e2e_verify.py` 已通过）
-- [x] 现有 58 项测试回归基线已更新为 `131 passed`
+- [x] 现有测试回归基线已更新为 `150 passed`（CI 无 Redis 时为 `141 passed + 9 skipped`）
 - [x] 租户/用户与 APIKey 的绑定关系（越权校验前置，`api_keys.json` + `identities.py`）
 #（注：内容由AI生成）
