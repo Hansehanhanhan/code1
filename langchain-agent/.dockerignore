@@ -1,0 +1,33 @@
+.git/
+.gitignore
+.github/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.eggs/
+.run/
+
+# 本地敏感配置与身份注册表，禁止进入镜像
+.env
+.env.*
+api_keys.json
+
+# 验证产物（由脚本重新生成）
+_e2e_result.json
+_real_multi_probe_result.json
+docs/bad_case_results.json
+frontend/tsconfig.tsbuildinfo
+
+# 前端依赖与构建产物
+frontend/node_modules/
+frontend/.next/
+frontend/dist/
+frontend/out/
+
+# 测试与知识库缓存
+tests/
+knowledge/.chroma/

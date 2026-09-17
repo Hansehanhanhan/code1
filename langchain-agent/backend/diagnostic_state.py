@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 MAX_STATE_BYTES = 8 * 1024
 MAX_FINDINGS = 20
 MAX_CANDIDATES = 10
+MAX_CONTEXT_SLOTS = 16
 MAX_CONSTRAINTS = 10
 MAX_CONCERNS = 10
 MAX_REJECTED = 20
@@ -123,7 +124,7 @@ def _finding_priority(finding: VerifiedFinding) -> tuple[int, int, float]:
 
 def normalize_and_limit_state(state: DiagnosticState) -> DiagnosticState:
     normalized = state.model_copy(deep=True)
-    normalized.context_slots = dict(list(normalized.context_slots.items())[:MAX_CANDIDATES])
+    normalized.context_slots = dict(list(normalized.context_slots.items())[:MAX_CONTEXT_SLOTS])
     normalized.current_candidates = _normalize_text_list(normalized.current_candidates, MAX_CANDIDATES)
     normalized.unresolved_constraints = _normalize_text_list(normalized.unresolved_constraints, MAX_CONSTRAINTS)
     normalized.validity_concerns = _normalize_text_list(normalized.validity_concerns, MAX_CONCERNS)

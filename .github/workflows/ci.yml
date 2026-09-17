@@ -36,6 +36,9 @@ jobs:
       - name: Unit tests
         run: npm run test
 
+      - name: Build
+        run: npm run build
+
   test-and-regression:
     runs-on: ubuntu-latest
     timeout-minutes: 30

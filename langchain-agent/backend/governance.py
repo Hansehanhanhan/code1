@@ -51,7 +51,8 @@ async def run_with_governance(
             if backoff_seconds > 0:
                 await asyncio.sleep(backoff_seconds)
 
-    assert last_exc is not None
+    if last_exc is None:
+        raise RuntimeError("run_with_governance exhausted attempts without an exception")
     raise last_exc
 
 

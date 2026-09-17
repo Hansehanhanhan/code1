@@ -31,18 +31,6 @@ def build_context_text(context: dict[str, Any]) -> str:
     return json.dumps(context or {}, ensure_ascii=False, default=str)
 
 
-def ensure_request_auth_from_key(provided_api_key: str | None, current_settings: Settings) -> None:
-    """简单 API Key 鉴权（开启时强制校验）。"""
-    if not current_settings.app_auth_enabled:
-        return
-    expected = (current_settings.app_api_key or "").strip()
-    if not expected:
-        raise HTTPException(status_code=500, detail="APP_API_KEY is not configured")
-    provided = (provided_api_key or "").strip()
-    if not provided or not hmac.compare_digest(provided, expected):
-        raise HTTPException(status_code=401, detail="Unauthorized: invalid API key")
-
-
 _MANAGER_API_KEY_PREFIX = "__admin__"
 
 
