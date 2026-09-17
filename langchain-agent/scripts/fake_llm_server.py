@@ -84,6 +84,25 @@ class FakeLlmHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         self._send_json({"status": "ok"})
 
+    def _send_sse(self, message: dict[str, Any], finish_reason: str, model: str) -> None:
+        base = {
+            "id": "chatcmpl-fake",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": model,
+        }
+        chunk1 = {**base, "choices": [{"index": 0, "delta": message, "finish_reason": None}]}
+        chunk2 = {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}]}
+        events = [f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n" for chunk in (chunk1, chunk2)]
+        body = ("".join(events) + "data: [DONE]\n\n").encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self) -> None:
         if not self.path.rstrip("/").endswith("chat/completions"):
             self._send_json({"error": "not found"}, status=404)
@@ -93,6 +112,14 @@ class FakeLlmHandler(BaseHTTPRequestHandler):
         messages: list[dict[str, Any]] = (
             body.get("messages") if isinstance(body.get("messages"), list) else []
         )
+        stream = bool(body.get("stream"))
+        available_tools = {
+            tool["function"]["name"]
+            for tool in body.get("tools", [])
+            if isinstance(tool, dict)
+            and isinstance(tool.get("function"), dict)
+            and isinstance(tool["function"].get("name"), str)
+        }
 
         query = ""
         for msg in messages:
@@ -103,12 +130,12 @@ class FakeLlmHandler(BaseHTTPRequestHandler):
                     break
 
         tool_count = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "tool")
-        plan = pick_plan(query)
+        plan = [tool for tool in pick_plan(query) if not available_tools or tool in available_tools]
         n_tools = len(plan)
         prompt = query[:128]
 
         message: dict[str, Any]
-        if tool_count < n_tools:
+        if n_tools and tool_count < n_tools:
             tool = plan[tool_count]
             args = TOOL_ARGS[tool].replace("{query}", json.dumps(query, ensure_ascii=False)[1:-1])
             message = {
@@ -128,7 +155,7 @@ class FakeLlmHandler(BaseHTTPRequestHandler):
             message = {
                 "role": "assistant",
                 "content": (
-                    f"已完成基于工具证据的结构化诊断（调用工具：{', '.join(plan)}）。"
+                    f"已完成基于工具证据的结构化诊断（调用工具：{', '.join(plan) or '无'}）。"
                     f"结论要点：{hint}。\n"
                     f"行动建议：\n"
                     f"1. 优先处理流量与转化瓶颈，定位高潜力关键词与商品。\n"
@@ -139,22 +166,26 @@ class FakeLlmHandler(BaseHTTPRequestHandler):
             }
             finish_reason = "stop"
 
-        self._send_json(
-            {
-                "id": "chatcmpl-fake",
-                "object": "chat.completion",
-                "created": 0,
-                "model": body.get("model", "fake-stub"),
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": message,
-                        "finish_reason": finish_reason,
-                    }
-                ],
-                "usage": {"prompt_tokens": 16, "completion_tokens": 16, "total_tokens": 32},
-            }
-        )
+        model = body.get("model", "fake-stub")
+        if stream:
+            self._send_sse(message, finish_reason, model)
+        else:
+            self._send_json(
+                {
+                    "id": "chatcmpl-fake",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": message,
+                            "finish_reason": finish_reason,
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 16, "completion_tokens": 16, "total_tokens": 32},
+                }
+            )
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return
